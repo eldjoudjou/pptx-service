@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+start.sh
+*.zip
+.DS_Store
+/tmp/
