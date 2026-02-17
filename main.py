@@ -9,7 +9,7 @@ Architecture :
   4. Exécute le code (édition XML directe ou python-pptx)
   5. Si erreur → renvoie le traceback au LLM → retry
   6. Sauvegarde sur S3 et retourne un lien pré-signé
-"""
+""
 
 import asyncio
 import io
