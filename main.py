@@ -97,6 +97,30 @@ async def save_to_siagpt_medias(data: bytes, filename: str, auth_token: str) -> 
         )
         response.raise_for_status()
         return response.json()
+
+
+async def download_from_siagpt_medias(file_uuid: str, auth_token: str) -> tuple[bytes, str]:
+    """
+    Télécharge un fichier depuis la collection SiaGPT via GET /medias/{uuid}/download.
+    Retourne (bytes, filename).
+    """
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        # D'abord récupérer les métadonnées pour le nom du fichier
+        meta_response = await client.get(
+            f"{SIAGPT_MEDIAS_URL}/{file_uuid}",
+            headers={"Authorization": f"Bearer {auth_token}"},
+        )
+        meta_response.raise_for_status()
+        meta = meta_response.json()
+        filename = meta.get("name", f"{file_uuid}.pptx")
+
+        # Télécharger le fichier
+        dl_response = await client.get(
+            f"{SIAGPT_MEDIAS_URL}/{file_uuid}/download",
+            headers={"Authorization": f"Bearer {auth_token}"},
+        )
+        dl_response.raise_for_status()
+        return dl_response.content, filename
 def load_system_prompt() -> str:
     try:
         return Path(SYSTEM_PROMPT_PATH).read_text(encoding="utf-8")
@@ -611,6 +635,24 @@ async def handle_mcp_request(body: dict, session_id: str = "") -> tuple[dict, st
                         },
                         "required": ["prompt"],
                     },
+                },
+                {
+                    "name": "edit_pptx",
+                    "description": "Modifie une présentation PowerPoint existante dans la collection SiaGPT. Récupère le fichier par son UUID, applique les modifications demandées, et uploade la version modifiée.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {
+                                "type": "string",
+                                "description": "Description des modifications à apporter (ex: changer les couleurs, ajouter une slide, modifier le texte...)",
+                            },
+                            "source_file_id": {
+                                "type": "string",
+                                "description": "UUID du fichier PPTX dans la collection SiaGPT à modifier",
+                            }
+                        },
+                        "required": ["prompt", "source_file_id"],
+                    },
                 }
             ]
         }), session_id
@@ -668,6 +710,71 @@ async def handle_mcp_request(body: dict, session_id: str = "") -> tuple[dict, st
 
                 return mcp_jsonrpc_error(req_id, -32000, f"Échec après {MAX_RETRIES} tentatives"), session_id
 
+            except Exception as e:
+                return mcp_jsonrpc_error(req_id, -32000, str(e)), session_id
+
+        if tool_name == "edit_pptx":
+            prompt = tool_args.get("prompt", "")
+            source_file_id = tool_args.get("source_file_id", "")
+            if not prompt:
+                return mcp_jsonrpc_error(req_id, -32602, "Le paramètre 'prompt' est requis"), session_id
+            if not source_file_id:
+                return mcp_jsonrpc_error(req_id, -32602, "Le paramètre 'source_file_id' est requis"), session_id
+
+            try:
+                auth_token = LLM_API_KEY
+
+                # 1. Télécharger le fichier depuis la collection SiaGPT
+                pptx_bytes, original_filename = await download_from_siagpt_medias(source_file_id, auth_token)
+                output_filename = f"modified_{uuid.uuid4().hex[:8]}.pptx"
+
+                # 2. Inspecter la structure
+                structure = inspect_pptx_structure(pptx_bytes)
+
+                # 3. Décompresser et éditer
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    unpacked_dir = unpack_pptx(pptx_bytes, tmp_dir)
+
+                    base_query = (
+                        f"MODE : ÉDITION (modifier un fichier existant)\n\n"
+                        f"Fichier source : {original_filename}\n"
+                        f"Structure du fichier PPTX :\n{structure}\n\n"
+                        f"Demande de l'utilisateur : {prompt}\n\n"
+                        f"Écris du code Python qui modifie les fichiers XML dans `unpacked_dir`.\n"
+                        f'unpacked_dir = "{unpacked_dir}"'
+                    )
+
+                    query = base_query
+                    for attempt in range(MAX_RETRIES):
+                        llm_response = await call_llm(SYSTEM_PROMPT, query)
+                        code = extract_code(llm_response)
+                        result = execute_edit_code(code, unpacked_dir)
+
+                        if result["success"]:
+                            output_bytes = repack_pptx(unpacked_dir, pptx_bytes)
+                            media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
+                            return mcp_jsonrpc_response(req_id, {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": f"Présentation modifiée avec succès !\n- Source : {original_filename} ({source_file_id})\n- Nouveau fichier : {media_info.get('name', output_filename)}\n- UUID : {media_info.get('uuid', 'N/A')}\n- Tentatives : {attempt + 1}",
+                                    }
+                                ]
+                            }), session_id
+
+                        query = (
+                            f"{base_query}\n\n"
+                            f"--- TENTATIVE PRÉCÉDENTE (échouée) ---\n"
+                            f"Code généré :\n```python\n{code}\n```\n\n"
+                            f"Erreur (tentative {attempt + 1}/{MAX_RETRIES}) :\n"
+                            f"{result['traceback']}\n\n"
+                            f"Corrige le code. Retourne UNIQUEMENT le code Python corrigé."
+                        )
+
+                return mcp_jsonrpc_error(req_id, -32000, f"Échec après {MAX_RETRIES} tentatives"), session_id
+
+            except httpx.HTTPStatusError as e:
+                return mcp_jsonrpc_error(req_id, -32000, f"Impossible de récupérer le fichier {source_file_id} : {e.response.status_code}"), session_id
             except Exception as e:
                 return mcp_jsonrpc_error(req_id, -32000, str(e)), session_id
 
