@@ -2,12 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Dépendances système : LibreOffice (conversion PPTX→PDF) + poppler (PDF→images)
+# Dépendances système (léger)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice-impress \
-    poppler-utils \
-    fonts-liberation \
-    fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Dépendances Python

@@ -25,7 +25,7 @@ import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pptx import Presentation
-from pptx.util import Inches, Pt
+from pptx.util import Inches
 from lxml import etree
 
 import pptx_tools
@@ -80,9 +80,7 @@ async def save_to_siagpt_medias(data: bytes, filename: str, auth_token: str) -> 
     Upload un fichier dans la collection SiaGPT via POST /medias/.
     Retourne les infos du media créé (uuid, name, versions...).
     """
-    import json as _json
-
-    media_metadata = _json.dumps({"collectionId": SIAGPT_COLLECTION_ID})
+    media_metadata = json.dumps({"collectionId": SIAGPT_COLLECTION_ID})
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
@@ -117,16 +115,15 @@ async def download_from_siagpt_medias(file_uuid: str, auth_token: str) -> tuple[
         )
         dl_response.raise_for_status()
         return dl_response.content, filename
+
+
 def load_system_prompt() -> str:
     try:
         return Path(SYSTEM_PROMPT_PATH).read_text(encoding="utf-8")
     except FileNotFoundError:
-        return "Tu es un expert en manipulation PowerPoint. Retourne uniquement du code Python."
+        return "Tu es un expert en manipulation PowerPoint via XML. Retourne uniquement du XML."
 
 SYSTEM_PROMPT = load_system_prompt()
-
-
-
 
 # ============================================================
 # Inspection PPTX
@@ -503,113 +500,69 @@ async def apply_xml_modifications(
 
 
 # ============================================================
-# QA Visuelle — Conversion PPTX → images + inspection LLM
+# Fonctions core — logique partagée REST / MCP
 # ============================================================
 
-async def visual_qa(pptx_bytes: bytes, modified_slides: list[str] = None) -> dict:
-    """
-    QA visuelle : convertit le PPTX en images et demande au LLM d'inspecter.
-    
-    1. PPTX → PDF via LibreOffice
-    2. PDF → images JPEG via pdftoppm
-    3. Encode en base64 et envoie au LLM pour inspection
-    
-    Retourne : { "issues": [...], "passed": bool }
-    """
-    import base64
-    import subprocess
+async def _do_edit(pptx_bytes: bytes, prompt: str, auth_token: str, output_filename: str = None) -> dict:
+    """Logique core d'édition PPTX. Utilisée par REST et MCP."""
+    if not output_filename:
+        output_filename = f"modified_{uuid.uuid4().hex[:8]}.pptx"
+
+    structure = inspect_pptx_structure(pptx_bytes)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = Path(tmp_dir)
-        pptx_file = tmp_path / "output.pptx"
-        pptx_file.write_bytes(pptx_bytes)
+        unpacked_dir = unpack_pptx(pptx_bytes, tmp_dir)
+        results = await apply_xml_modifications(unpacked_dir, structure, prompt)
+        output_bytes = repack_pptx(unpacked_dir, pptx_bytes)
 
-        # 1. PPTX → PDF via LibreOffice
-        try:
-            subprocess.run(
-                [
-                    "soffice", "--headless", "--convert-to", "pdf",
-                    "--outdir", str(tmp_path), str(pptx_file),
-                ],
-                capture_output=True, timeout=60, check=True,
-            )
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
-            return {"issues": [f"LibreOffice non disponible ou erreur conversion: {e}"], "passed": False, "skipped": True}
+    media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
 
-        pdf_file = tmp_path / "output.pdf"
-        if not pdf_file.exists():
-            return {"issues": ["Conversion PDF échouée"], "passed": False, "skipped": True}
+    return {
+        "status": "ok",
+        "summary": results["plan"].get("summary", ""),
+        "modified_slides": results["modified_slides"],
+        "added_slides": results["added_slides"],
+        "removed_slides": results["removed_slides"],
+        "errors": results["errors"],
+        "media_uuid": media_info.get("uuid"),
+        "media_name": media_info.get("name"),
+    }
 
-        # 2. PDF → images JPEG via pdftoppm
-        try:
-            subprocess.run(
-                [
-                    "pdftoppm", "-jpeg", "-r", "150",
-                    str(pdf_file), str(tmp_path / "slide"),
-                ],
-                capture_output=True, timeout=60, check=True,
-            )
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
-            return {"issues": [f"pdftoppm non disponible ou erreur: {e}"], "passed": False, "skipped": True}
 
-        # 3. Collecter les images
-        slide_images = sorted(tmp_path.glob("slide-*.jpg"))
-        if not slide_images:
-            return {"issues": ["Aucune image générée"], "passed": False, "skipped": True}
+async def _do_create(prompt: str, auth_token: str, template_bytes: bytes = None, output_filename: str = None) -> dict:
+    """Logique core de création PPTX. Utilisée par REST et MCP."""
+    if not output_filename:
+        output_filename = f"new_{uuid.uuid4().hex[:8]}.pptx"
 
-        # Si on a une liste de slides modifiées, ne vérifier que celles-là
-        images_to_check = []
-        for img in slide_images:
-            # slide-01.jpg → slide index 1
-            match = re.match(r"slide-(\d+)\.jpg", img.name)
-            if match:
-                slide_num = int(match.group(1))
-                slide_filename = f"slide{slide_num}.xml"
+    if not template_bytes:
+        template_bytes = create_skeleton_pptx(prompt)
 
-                # Si pas de filtre, ou si cette slide est dans la liste modifiée
-                if modified_slides is None or slide_filename in modified_slides:
-                    img_b64 = base64.b64encode(img.read_bytes()).decode("ascii")
-                    images_to_check.append({
-                        "slide_num": slide_num,
-                        "filename": slide_filename,
-                        "base64": img_b64,
-                    })
+    create_prompt = (
+        f"CRÉATION DE PRÉSENTATION depuis un template.\n\n"
+        f"Demande : {prompt}\n\n"
+        f"Modifie les slides existantes pour répondre à la demande. "
+        f"Tu peux dupliquer des slides pour en ajouter, en supprimer si nécessaire, "
+        f"et modifier tout le contenu texte."
+    )
 
-        if not images_to_check:
-            return {"issues": [], "passed": True, "skipped": False}
+    return await _do_edit(template_bytes, create_prompt, auth_token, output_filename)
 
-        # 4. Demander au LLM d'inspecter (max 5 slides pour limiter les tokens)
-        images_to_check = images_to_check[:5]
 
-        qa_prompt = (
-            "Tu es un QA visuel pour des présentations PowerPoint.\n"
-            "Inspecte les images de slides suivantes et signale TOUT problème :\n"
-            "- Texte qui déborde ou est coupé aux bords\n"
-            "- Éléments qui se chevauchent (texte sur texte, forme sur texte)\n"
-            "- Alignement incohérent (éléments pas alignés entre eux)\n"
-            "- Espacement trop serré (< 0.3 pouce entre éléments)\n"
-            "- Texte illisible (trop petit, contraste insuffisant)\n"
-            "- Contenu placeholder non remplacé ([Titre], XXXX, Lorem ipsum)\n\n"
-            "Pour chaque slide, liste les problèmes trouvés.\n"
-            "Si aucun problème : écris 'OK'.\n\n"
-            "Retourne un JSON : {\"slides\": [{\"num\": 1, \"issues\": [\"...\"]}, ...]}\n"
-            "Si pas de problème pour une slide : {\"num\": 1, \"issues\": []}"
-        )
-
-        # Note : /plain_llm ne supporte peut-être pas les images.
-        # Dans ce cas, on skip la QA visuelle LLM et on fait juste la conversion.
-        # Le service pourra exposer les images via un endpoint pour inspection manuelle.
-        
-        # Pour l'instant : stocker les images et retourner les chemins
-        # La QA LLM sera activée quand l'API supportera le multimodal
-        return {
-            "issues": [],
-            "passed": True,
-            "skipped": False,
-            "slide_count": len(slide_images),
-            "checked_count": len(images_to_check),
-            "note": "Images générées pour QA. Inspection visuelle LLM disponible quand /plain_llm supportera le multimodal.",
-        }
+def _format_mcp_summary(action: str, result: dict, extra_line: str = None) -> str:
+    """Formate un résumé texte pour les réponses MCP."""
+    lines = [f"Présentation {action} avec succès !"]
+    if extra_line:
+        lines.append(f"- {extra_line}")
+    lines.append(f"- Fichier : {result.get('media_name', 'N/A')}")
+    lines.append(f"- UUID : {result.get('media_uuid', 'N/A')}")
+    lines.append(f"- {result.get('summary', '')}")
+    if result.get("modified_slides"):
+        lines.append(f"- Slides modifiées : {', '.join(result['modified_slides'])}")
+    if result.get("added_slides"):
+        lines.append(f"- Slides ajoutées : {', '.join(result['added_slides'])}")
+    if result.get("errors"):
+        lines.append(f"- Avertissements : {'; '.join(result['errors'])}")
+    return "\n".join(lines)
 
 
 # ============================================================
@@ -623,50 +576,13 @@ async def edit_pptx(
     file: UploadFile = File(...),
     output_filename: str = Form(None),
 ):
-    """
-    Modifie un PPTX existant selon la demande utilisateur.
-    Mode XML pur : le LLM retourne du XML modifié, pas du code.
-    """
+    """Modifie un PPTX existant. Mode XML pur."""
     auth_token = (request.headers.get("authorization", "").removeprefix("Bearer ").strip()) or LLM_API_KEY
-
-    # 1. Lire le fichier uploadé
     pptx_bytes = await file.read()
-    if not output_filename:
-        output_filename = f"modified_{uuid.uuid4().hex[:8]}.pptx"
-
-    # 2. Inspecter la structure
-    structure = inspect_pptx_structure(pptx_bytes)
-
-    # 3. Créer un dossier temporaire et décompresser
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        unpacked_dir = unpack_pptx(pptx_bytes, tmp_dir)
-
-        # 4. Appliquer les modifications XML (planification + modification)
-        try:
-            results = await apply_xml_modifications(unpacked_dir, structure, prompt)
-        except ValueError as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-        # 5. Repack et sauvegarder
-        output_bytes = repack_pptx(unpacked_dir, pptx_bytes)
-
-        # 6. QA visuelle
-        all_modified = results["modified_slides"] + results["added_slides"]
-        qa_result = await visual_qa(output_bytes, all_modified or None)
-
-        media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
-
-        return {
-            "status": "ok",
-            "summary": results["plan"].get("summary", ""),
-            "modified_slides": results["modified_slides"],
-            "added_slides": results["added_slides"],
-            "removed_slides": results["removed_slides"],
-            "errors": results["errors"],
-            "qa": qa_result,
-            "media_uuid": media_info.get("uuid"),
-            "media_name": media_info.get("name"),
-        }
+    try:
+        return await _do_edit(pptx_bytes, prompt, auth_token, output_filename)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================
@@ -680,60 +596,13 @@ async def create_pptx(
     template: UploadFile = File(None),
     output_filename: str = Form(None),
 ):
-    """
-    Crée un PPTX depuis un template.
-    Mode XML pur : le LLM modifie le XML du template, pas d'exec().
-    Sans template : crée un squelette basique puis le LLM le remplit via XML.
-    """
+    """Crée un PPTX depuis un template (ou un squelette vierge). Mode XML pur."""
     auth_token = (request.headers.get("authorization", "").removeprefix("Bearer ").strip()) or LLM_API_KEY
-    if not output_filename:
-        output_filename = f"new_{uuid.uuid4().hex[:8]}.pptx"
-
-    if template:
-        # Mode template : même workflow que l'édition
-        template_bytes = await template.read()
-    else:
-        # Sans template : créer un squelette basique avec python-pptx
-        # (c'est NOTRE code, pas du code LLM — pas de risque sécu)
-        template_bytes = create_skeleton_pptx(prompt)
-
-    structure = inspect_pptx_structure(template_bytes)
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        unpacked_dir = unpack_pptx(template_bytes, tmp_dir)
-
-        # Le prompt de création demande au LLM de remplir/modifier le template
-        create_prompt = (
-            f"CRÉATION DE PRÉSENTATION depuis un template.\n\n"
-            f"Demande : {prompt}\n\n"
-            f"Modifie les slides existantes pour répondre à la demande. "
-            f"Tu peux dupliquer des slides pour en ajouter, en supprimer si nécessaire, "
-            f"et modifier tout le contenu texte."
-        )
-
-        try:
-            results = await apply_xml_modifications(unpacked_dir, structure, create_prompt)
-        except ValueError as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-        output_bytes = repack_pptx(unpacked_dir, template_bytes)
-
-        # QA visuelle
-        all_modified = results["modified_slides"] + results["added_slides"]
-        qa_result = await visual_qa(output_bytes, all_modified or None)
-
-        media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
-
-        return {
-            "status": "ok",
-            "summary": results["plan"].get("summary", ""),
-            "modified_slides": results["modified_slides"],
-            "added_slides": results["added_slides"],
-            "errors": results["errors"],
-            "qa": qa_result,
-            "media_uuid": media_info.get("uuid"),
-            "media_name": media_info.get("name"),
-        }
+    template_bytes = await template.read() if template else None
+    try:
+        return await _do_create(prompt, auth_token, template_bytes, output_filename)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def create_skeleton_pptx(prompt: str) -> bytes:
@@ -780,63 +649,6 @@ async def inspect_xml(file: UploadFile = File(...), slide_index: int = Form(0)):
     xml = inspect_slide_xml(pptx_bytes, slide_index)
     return {"slide_index": slide_index, "xml": xml}
 
-
-@app.post("/api/preview")
-async def preview_pptx(file: UploadFile = File(...), slide_num: int = Form(None)):
-    """
-    Convertit un PPTX en image(s) JPEG pour preview/QA.
-    Si slide_num est spécifié, retourne uniquement cette slide.
-    Sinon retourne toutes les slides en base64.
-    """
-    import base64
-    import subprocess
-
-    pptx_bytes = await file.read()
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = Path(tmp_dir)
-        pptx_file = tmp_path / "input.pptx"
-        pptx_file.write_bytes(pptx_bytes)
-
-        # PPTX → PDF
-        try:
-            subprocess.run(
-                ["soffice", "--headless", "--convert-to", "pdf",
-                 "--outdir", str(tmp_path), str(pptx_file)],
-                capture_output=True, timeout=60, check=True,
-            )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Conversion PDF échouée: {e}")
-
-        pdf_file = tmp_path / "input.pdf"
-        if not pdf_file.exists():
-            raise HTTPException(status_code=500, detail="PDF non généré")
-
-        # PDF → JPEG
-        pdftoppm_args = ["pdftoppm", "-jpeg", "-r", "150"]
-        if slide_num:
-            pdftoppm_args += ["-f", str(slide_num), "-l", str(slide_num)]
-        pdftoppm_args += [str(pdf_file), str(tmp_path / "slide")]
-
-        try:
-            subprocess.run(pdftoppm_args, capture_output=True, timeout=60, check=True)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Conversion images échouée: {e}")
-
-        # Collecter les images
-        slides = []
-        for img in sorted(tmp_path.glob("slide-*.jpg")):
-            match = re.match(r"slide-(\d+)\.jpg", img.name)
-            if match:
-                slides.append({
-                    "slide_num": int(match.group(1)),
-                    "base64": base64.b64encode(img.read_bytes()).decode("ascii"),
-                })
-
-        if not slides:
-            raise HTTPException(status_code=500, detail="Aucune image générée")
-
-        return {"slides": slides, "count": len(slides)}
 
 
 # ============================================================
@@ -967,44 +779,10 @@ async def handle_mcp_request(body: dict, session_id: str = "") -> tuple[dict, st
                 return mcp_jsonrpc_error(req_id, -32602, "Le paramètre 'prompt' est requis"), session_id
 
             try:
-                auth_token = LLM_API_KEY
-                output_filename = f"new_{uuid.uuid4().hex[:8]}.pptx"
-
-                # Créer un squelette basique (code contrôlé, pas de LLM)
-                template_bytes = create_skeleton_pptx(prompt)
-                structure = inspect_pptx_structure(template_bytes)
-
-                with tempfile.TemporaryDirectory() as tmp_dir:
-                    unpacked_dir = unpack_pptx(template_bytes, tmp_dir)
-
-                    create_prompt = (
-                        f"CRÉATION DE PRÉSENTATION depuis un template.\n\n"
-                        f"Demande : {prompt}\n\n"
-                        f"Modifie les slides existantes pour répondre à la demande. "
-                        f"Tu peux dupliquer des slides pour en ajouter, en supprimer si nécessaire, "
-                        f"et modifier tout le contenu texte."
-                    )
-
-                    results = await apply_xml_modifications(unpacked_dir, structure, create_prompt)
-                    output_bytes = repack_pptx(unpacked_dir, template_bytes)
-
-                media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
-
-                summary_parts = [f"Présentation créée avec succès !"]
-                summary_parts.append(f"- Fichier : {media_info.get('name', output_filename)}")
-                summary_parts.append(f"- UUID : {media_info.get('uuid', 'N/A')}")
-                summary_parts.append(f"- {results['plan'].get('summary', '')}")
-                if results["modified_slides"]:
-                    summary_parts.append(f"- Slides modifiées : {', '.join(results['modified_slides'])}")
-                if results["added_slides"]:
-                    summary_parts.append(f"- Slides ajoutées : {', '.join(results['added_slides'])}")
-                if results["errors"]:
-                    summary_parts.append(f"- Avertissements : {'; '.join(results['errors'])}")
-
+                result = await _do_create(prompt, LLM_API_KEY)
                 return mcp_jsonrpc_response(req_id, {
-                    "content": [{"type": "text", "text": "\n".join(summary_parts)}]
+                    "content": [{"type": "text", "text": _format_mcp_summary("créée", result)}]
                 }), session_id
-
             except Exception as e:
                 return mcp_jsonrpc_error(req_id, -32000, str(e)), session_id
 
@@ -1017,41 +795,14 @@ async def handle_mcp_request(body: dict, session_id: str = "") -> tuple[dict, st
                 return mcp_jsonrpc_error(req_id, -32602, "Le paramètre 'source_file_id' est requis"), session_id
 
             try:
-                auth_token = LLM_API_KEY
-
-                # 1. Télécharger le fichier depuis la collection SiaGPT
-                pptx_bytes, original_filename = await download_from_siagpt_medias(source_file_id, auth_token)
-                output_filename = f"modified_{uuid.uuid4().hex[:8]}.pptx"
-
-                # 2. Inspecter la structure
-                structure = inspect_pptx_structure(pptx_bytes)
-
-                # 3. Décompresser et modifier en mode XML pur
-                with tempfile.TemporaryDirectory() as tmp_dir:
-                    unpacked_dir = unpack_pptx(pptx_bytes, tmp_dir)
-                    results = await apply_xml_modifications(unpacked_dir, structure, prompt)
-                    output_bytes = repack_pptx(unpacked_dir, pptx_bytes)
-
-                media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
-
-                summary_parts = [f"Présentation modifiée avec succès !"]
-                summary_parts.append(f"- Source : {original_filename} ({source_file_id})")
-                summary_parts.append(f"- Nouveau fichier : {media_info.get('name', output_filename)}")
-                summary_parts.append(f"- UUID : {media_info.get('uuid', 'N/A')}")
-                summary_parts.append(f"- {results['plan'].get('summary', '')}")
-                if results["modified_slides"]:
-                    summary_parts.append(f"- Slides modifiées : {', '.join(results['modified_slides'])}")
-                if results["added_slides"]:
-                    summary_parts.append(f"- Slides ajoutées : {', '.join(results['added_slides'])}")
-                if results["errors"]:
-                    summary_parts.append(f"- Avertissements : {'; '.join(results['errors'])}")
-
+                pptx_bytes, original_filename = await download_from_siagpt_medias(source_file_id, LLM_API_KEY)
+                result = await _do_edit(pptx_bytes, prompt, LLM_API_KEY)
+                summary = _format_mcp_summary("modifiée", result, f"Source : {original_filename} ({source_file_id})")
                 return mcp_jsonrpc_response(req_id, {
-                    "content": [{"type": "text", "text": "\n".join(summary_parts)}]
+                    "content": [{"type": "text", "text": summary}]
                 }), session_id
-
             except httpx.HTTPStatusError as e:
-                return mcp_jsonrpc_error(req_id, -32000, f"Impossible de récupérer le fichier {source_file_id} : {e.response.status_code}"), session_id
+                return mcp_jsonrpc_error(req_id, -32000, f"Fichier {source_file_id} introuvable : {e.response.status_code}"), session_id
             except Exception as e:
                 return mcp_jsonrpc_error(req_id, -32000, str(e)), session_id
 
@@ -1122,36 +873,29 @@ async def mcp_messages(request: Request, session_id: str = ""):
 # ============================================================
 
 @app.post("/api/generate")
-async def generate_pptx(
-    request: Request,
-):
-    """
-    Endpoint unifié — accepte JSON ou form-data :
-    - JSON : {"prompt": "..."}
-    - Form-data : prompt + fichier optionnel
-    """
+async def generate_pptx(request: Request):
+    """Endpoint unifié — accepte JSON ou form-data, crée ou modifie un PPTX."""
+    auth_token = (request.headers.get("authorization", "").removeprefix("Bearer ").strip()) or LLM_API_KEY
     content_type = request.headers.get("content-type", "")
 
     if "application/json" in content_type:
-        # Mode JSON (Langflow, API calls)
         body = await request.json()
         prompt = body.get("prompt", "")
-        output_filename = body.get("output_filename", None)
         if not prompt:
             raise HTTPException(status_code=400, detail="Le champ 'prompt' est requis")
-        return await create_pptx(request, prompt, None, output_filename)
+        return await _do_create(prompt, auth_token, output_filename=body.get("output_filename"))
     else:
-        # Mode form-data (curl, upload de fichier)
         form = await request.form()
         prompt = form.get("prompt", "")
-        file = form.get("file", None)
-        output_filename = form.get("output_filename", None)
         if not prompt:
             raise HTTPException(status_code=400, detail="Le champ 'prompt' est requis")
+        file = form.get("file", None)
+        output_filename = form.get("output_filename", None)
         if file and hasattr(file, 'filename') and file.filename:
-            return await edit_pptx(request, prompt, file, output_filename)
+            pptx_bytes = await file.read()
+            return await _do_edit(pptx_bytes, prompt, auth_token, output_filename)
         else:
-            return await create_pptx(request, prompt, None, output_filename)
+            return await _do_create(prompt, auth_token, output_filename=output_filename)
 
 
 # ============================================================
