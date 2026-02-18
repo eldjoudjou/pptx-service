@@ -2,8 +2,12 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Dépendances système
+# Dépendances système : LibreOffice (conversion PPTX→PDF) + poppler (PDF→images)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    libreoffice-impress \
+    poppler-utils \
+    fonts-liberation \
+    fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Dépendances Python
@@ -12,10 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Code du service
 COPY main.py .
+COPY pptx_tools.py .
 COPY system_prompt.md .
-
-# Skill Claude (scripts d'édition PPTX)
-COPY skill/ ./skill/
 
 EXPOSE 8000
 

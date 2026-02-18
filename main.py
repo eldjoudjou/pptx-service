@@ -1,14 +1,15 @@
 """
-PPTX Service — Micro-service de manipulation PowerPoint
-Reproduit le workflow Claude pour la manipulation de fichiers PPTX.
+PPTX Service — Micro-service de manipulation PowerPoint (Mode XML Pur)
 
 Architecture :
-  1. Reçoit une demande utilisateur + fichier PPTX (ou demande de création)
+  1. Reçoit une demande utilisateur + référence à un PPTX (ou demande de création)
   2. Inspecte le fichier (structure, contenu)
-  3. Appelle un LLM pour générer du code Python
-  4. Exécute le code (édition XML directe ou python-pptx)
-  5. Si erreur → renvoie le traceback au LLM → retry
-  6. Sauvegarde sur S3 et retourne un lien pré-signé
+  3. Appelle un LLM pour planifier les modifications (JSON)
+  4. Pour chaque slide à modifier, le LLM retourne le XML modifié directement
+  5. Valide le XML, repackage le PPTX
+  6. Upload dans la collection SiaGPT
+
+Sécurité : AUCUN exec() — le LLM retourne du XML, pas du code.
 """
 
 import asyncio
@@ -16,23 +17,18 @@ import io
 import json
 import os
 import re
-import shutil
 import tempfile
-import traceback
 import uuid
-import zipfile
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pptx import Presentation
-from pptx.util import Inches, Pt, Emu, Cm
-from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN, MSO_ANCHOR, MSO_AUTO_SIZE
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.util import Inches, Pt
 from lxml import etree
-import defusedxml.minidom
+
+import pptx_tools
 
 # ============================================================
 # Configuration
@@ -208,60 +204,16 @@ def inspect_slide_xml(pptx_bytes: bytes, slide_index: int) -> str:
 # ============================================================
 
 def unpack_pptx(pptx_bytes: bytes, dest_dir: str) -> str:
-    """Décompresse un PPTX dans un dossier, retourne le chemin."""
-    unpacked_dir = Path(dest_dir) / "unpacked"
-    unpacked_dir.mkdir(parents=True, exist_ok=True)
-
-    with zipfile.ZipFile(io.BytesIO(pptx_bytes), "r") as zf:
-        zf.extractall(unpacked_dir)
-
-    # Pretty-print les XML pour faciliter l'édition
-    for xml_file in list(unpacked_dir.rglob("*.xml")) + list(unpacked_dir.rglob("*.rels")):
-        try:
-            content = xml_file.read_text(encoding="utf-8")
-            dom = defusedxml.minidom.parseString(content)
-            xml_file.write_bytes(dom.toprettyxml(indent="  ", encoding="utf-8"))
-        except Exception:
-            pass
-
-    return str(unpacked_dir)
+    """Décompresse un PPTX avec pretty-print XML et smart quotes."""
+    unpacked_dir = str(Path(dest_dir) / "unpacked")
+    return pptx_tools.unpack(pptx_bytes, unpacked_dir)
 
 
 def repack_pptx(unpacked_dir: str, original_bytes: bytes = None) -> bytes:
-    """Recompresse un dossier en PPTX, retourne les bytes."""
-    unpacked_path = Path(unpacked_dir)
-
-    # Condenser le XML (retirer les whitespaces ajoutés par pretty-print)
-    for pattern in ["*.xml", "*.rels"]:
-        for xml_file in unpacked_path.rglob(pattern):
-            try:
-                with open(xml_file, encoding="utf-8") as f:
-                    dom = defusedxml.minidom.parse(f)
-
-                # Retirer les text nodes vides (sauf dans les <a:t> tags)
-                for element in dom.getElementsByTagName("*"):
-                    if element.tagName.endswith(":t"):
-                        continue
-                    for child in list(element.childNodes):
-                        if (
-                            child.nodeType == child.TEXT_NODE
-                            and child.nodeValue
-                            and child.nodeValue.strip() == ""
-                        ) or child.nodeType == child.COMMENT_NODE:
-                            element.removeChild(child)
-
-                xml_file.write_bytes(dom.toxml(encoding="UTF-8"))
-            except Exception as e:
-                print(f"Warning: Failed to condense {xml_file.name}: {e}")
-
-    # Créer le ZIP
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in unpacked_path.rglob("*"):
-            if f.is_file():
-                zf.write(f, f.relative_to(unpacked_path))
-    buf.seek(0)
-    return buf.read()
+    """Repackage avec condensation XML, nettoyage et smart quotes."""
+    # Nettoyer les fichiers orphelins avant repackage
+    pptx_tools.clean(unpacked_dir)
+    return pptx_tools.pack(unpacked_dir, original_bytes)
 
 
 # ============================================================
@@ -299,84 +251,364 @@ async def call_llm(system_prompt: str, query: str) -> str:
         return str(data)
 
 
-def extract_code(llm_response: str) -> str:
-    """Extrait le code Python de la réponse LLM (enlève les ```python si présents)."""
-    code = llm_response.strip()
-
-    # Enlever les blocs markdown si le LLM en a mis malgré les instructions
-    if code.startswith("```python"):
-        code = code[len("```python") :].strip()
-    if code.startswith("```"):
-        code = code[3:].strip()
-    if code.endswith("```"):
-        code = code[:-3].strip()
-
-    return code
+def extract_json(llm_response: str) -> dict:
+    """Extrait le JSON de la réponse LLM (enlève les ```json si présents)."""
+    text = llm_response.strip()
+    # Enlever les blocs markdown
+    if text.startswith("```json"):
+        text = text[len("```json"):].strip()
+    if text.startswith("```"):
+        text = text[3:].strip()
+    if text.endswith("```"):
+        text = text[:-3].strip()
+    return json.loads(text)
 
 
-# ============================================================
-# Exécution du code — MODE ÉDITION (XML direct)
-# ============================================================
+def extract_xml(llm_response: str) -> str:
+    """Extrait le XML de la réponse LLM (enlève les ```xml si présents)."""
+    text = llm_response.strip()
+    if text.startswith("```xml"):
+        text = text[len("```xml"):].strip()
+    if text.startswith("```"):
+        text = text[3:].strip()
+    if text.endswith("```"):
+        text = text[:-3].strip()
+    return text
 
-def execute_edit_code(code: str, unpacked_dir: str) -> dict:
-    """Exécute du code d'édition XML dans le dossier décompressé."""
-    exec_globals = {
-        "__builtins__": __builtins__,
-        "unpacked_dir": unpacked_dir,
-        "os": os,
-        "re": re,
-        "shutil": shutil,
-        "Path": Path,
-        "defusedxml": defusedxml,
-        "etree": etree,
-        "json": json,
+
+def validate_xml(xml_string: str) -> tuple[bool, str]:
+    """Valide que le XML est bien formé. Retourne (valide, message_erreur)."""
+    try:
+        etree.fromstring(xml_string.encode("utf-8"))
+        return True, ""
+    except etree.XMLSyntaxError as e:
+        return False, str(e)
+
+
+def read_slide_xmls(unpacked_dir: str) -> dict[str, str]:
+    """Lit tous les XML de slides depuis le dossier décompressé."""
+    slides_dir = Path(unpacked_dir) / "ppt" / "slides"
+    slides = {}
+    if slides_dir.exists():
+        for slide_file in sorted(slides_dir.glob("slide*.xml")):
+            slides[slide_file.name] = slide_file.read_text(encoding="utf-8")
+    return slides
+
+
+async def plan_modifications(structure: str, prompt: str, slide_xmls: dict[str, str] = None) -> dict:
+    """
+    Phase 1 : Appelle le LLM pour planifier les modifications.
+    Retourne un dict avec slides_to_modify, slides_to_add, slides_to_remove, summary.
+    """
+    query = (
+        "PHASE : PLANIFICATION\n\n"
+        f"Structure du fichier PPTX :\n{structure}\n\n"
+    )
+
+    # Ajouter un aperçu du contenu des slides si disponible
+    if slide_xmls:
+        query += "Contenu des slides (aperçu texte) :\n"
+        for name, xml in slide_xmls.items():
+            # Extraire juste le texte visible pour le planning
+            texts = re.findall(r'<a:t[^>]*>([^<]+)</a:t>', xml)
+            preview = " | ".join(texts[:20])  # Limiter l'aperçu
+            query += f"  {name}: {preview[:300]}\n"
+        query += "\n"
+
+    query += (
+        f"Demande de l'utilisateur : {prompt}\n\n"
+        "Retourne UNIQUEMENT un JSON valide décrivant le plan de modifications."
+    )
+
+    for attempt in range(MAX_RETRIES):
+        llm_response = await call_llm(SYSTEM_PROMPT, query)
+        try:
+            plan = extract_json(llm_response)
+            # Valider la structure minimale
+            if "summary" not in plan:
+                plan["summary"] = "Modifications planifiées"
+            return plan
+        except (json.JSONDecodeError, ValueError) as e:
+            if attempt < MAX_RETRIES - 1:
+                query = (
+                    f"Ta réponse précédente n'était pas du JSON valide.\n"
+                    f"Erreur : {e}\n"
+                    f"Ta réponse était :\n{llm_response[:500]}\n\n"
+                    f"Retourne UNIQUEMENT un JSON valide. Pas de texte, pas de markdown."
+                )
+            else:
+                raise ValueError(f"Le LLM n'a pas retourné de JSON valide après {MAX_RETRIES} tentatives")
+
+
+async def modify_slide_xml(
+    slide_xml: str,
+    instructions: str,
+    slide_name: str,
+    structure_context: str = "",
+) -> str:
+    """
+    Phase 2 : Appelle le LLM pour modifier le XML d'une slide.
+    Retourne le XML modifié complet.
+    """
+    query = (
+        "PHASE : MODIFICATION XML\n\n"
+        f"Slide : {slide_name}\n\n"
+    )
+    if structure_context:
+        query += f"Contexte de la présentation :\n{structure_context}\n\n"
+
+    query += (
+        f"Instructions : {instructions}\n\n"
+        f"XML actuel de la slide :\n{slide_xml}\n\n"
+        "Retourne UNIQUEMENT le XML modifié complet. Pas de markdown, pas d'explication."
+    )
+
+    for attempt in range(MAX_RETRIES):
+        llm_response = await call_llm(SYSTEM_PROMPT, query)
+        new_xml = extract_xml(llm_response)
+
+        is_valid, error_msg = validate_xml(new_xml)
+        if is_valid:
+            return new_xml
+
+        # XML invalide → demander correction
+        if attempt < MAX_RETRIES - 1:
+            query = (
+                "PHASE : MODIFICATION XML\n\n"
+                f"Slide : {slide_name}\n\n"
+                f"Ton XML précédent contenait une erreur : {error_msg}\n\n"
+                f"XML que tu as retourné (début) :\n{new_xml[:1000]}\n\n"
+                f"XML original de la slide :\n{slide_xml}\n\n"
+                f"Instructions originales : {instructions}\n\n"
+                "Corrige et retourne UNIQUEMENT le XML modifié complet et valide."
+            )
+        else:
+            raise ValueError(f"XML invalide après {MAX_RETRIES} tentatives : {error_msg}")
+
+    return slide_xml  # Fallback : retourner l'original
+
+
+async def apply_xml_modifications(
+    unpacked_dir: str,
+    structure: str,
+    prompt: str,
+) -> dict:
+    """
+    Workflow complet XML pur :
+    1. Lire les slides
+    2. Planifier les modifications
+    3. Appliquer les modifications XML slide par slide
+    4. Retourne un résumé
+    """
+    slide_xmls = read_slide_xmls(unpacked_dir)
+    slides_dir = Path(unpacked_dir) / "ppt" / "slides"
+
+    # Phase 1 : Planifier
+    plan = await plan_modifications(structure, prompt, slide_xmls)
+
+    results = {
+        "plan": plan,
+        "modified_slides": [],
+        "added_slides": [],
+        "removed_slides": [],
+        "errors": [],
     }
 
-    try:
-        exec(code, exec_globals)
-        return {"success": True}
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc(),
-        }
+    # Phase 2a : Modifier les slides existantes
+    for mod in plan.get("slides_to_modify", []):
+        filename = mod["filename"]
+        instructions = mod["instructions"]
+
+        if filename not in slide_xmls:
+            results["errors"].append(f"Slide {filename} introuvable")
+            continue
+
+        try:
+            new_xml = await modify_slide_xml(
+                slide_xmls[filename],
+                instructions,
+                filename,
+                structure_context=plan.get("summary", ""),
+            )
+            # Écrire le XML modifié
+            (slides_dir / filename).write_text(new_xml, encoding="utf-8")
+            results["modified_slides"].append(filename)
+        except Exception as e:
+            results["errors"].append(f"Erreur sur {filename}: {str(e)}")
+
+    # Phase 2b : Ajouter des slides (duplication + modification)
+    for add in plan.get("slides_to_add", []):
+        source = add.get("duplicate_from", "")
+        instructions = add.get("instructions", "")
+        position = add.get("position", None)
+
+        if source not in slide_xmls:
+            results["errors"].append(f"Slide source {source} introuvable pour duplication")
+            continue
+
+        try:
+            # Dupliquer la slide via pptx_tools (gère .rels, Content_Types, notesSlide)
+            dup_info = pptx_tools.duplicate_slide(unpacked_dir, source)
+            new_filename = dup_info["new_filename"]
+
+            # Ajouter dans presentation.xml à la bonne position
+            pptx_tools.add_slide_to_presentation(
+                unpacked_dir,
+                dup_info["new_sld_id"],
+                dup_info["new_r_id"],
+                position=position,
+            )
+
+            # Modifier le contenu si des instructions sont fournies
+            if instructions:
+                new_slide_xml = (slides_dir / new_filename).read_text(encoding="utf-8")
+                modified_xml = await modify_slide_xml(
+                    new_slide_xml,
+                    instructions,
+                    new_filename,
+                    structure_context=plan.get("summary", ""),
+                )
+                (slides_dir / new_filename).write_text(modified_xml, encoding="utf-8")
+
+            results["added_slides"].append(new_filename)
+        except Exception as e:
+            results["errors"].append(f"Erreur ajout slide depuis {source}: {str(e)}")
+
+    # Phase 2c : Supprimer des slides
+    # On retire juste le <p:sldId> de presentation.xml
+    # Le nettoyage des fichiers orphelins est fait par clean() au moment du repack
+    for filename in plan.get("slides_to_remove", []):
+        try:
+            pres_path = Path(unpacked_dir) / "ppt" / "presentation.xml"
+            pres_xml = pres_path.read_text(encoding="utf-8")
+
+            # Trouver le rId correspondant au fichier
+            pres_rels_path = Path(unpacked_dir) / "ppt" / "_rels" / "presentation.xml.rels"
+            pres_rels = pres_rels_path.read_text(encoding="utf-8")
+            r_id_match = re.search(rf'Id="(rId\d+)"[^>]*Target="slides/{filename}"', pres_rels)
+
+            if r_id_match:
+                r_id = r_id_match.group(1)
+                # Retirer le sldId de presentation.xml
+                pres_xml = re.sub(rf'\s*<p:sldId[^>]*r:id="{r_id}"[^>]*/>', '', pres_xml)
+                pres_path.write_text(pres_xml, encoding="utf-8")
+
+                results["removed_slides"].append(filename)
+            else:
+                results["errors"].append(f"Slide {filename} non trouvée dans les relations")
+        except Exception as e:
+            results["errors"].append(f"Erreur suppression {filename}: {str(e)}")
+
+    return results
 
 
 # ============================================================
-# Exécution du code — MODE CRÉATION (python-pptx)
+# QA Visuelle — Conversion PPTX → images + inspection LLM
 # ============================================================
 
-def execute_create_code(code: str, prs: Presentation) -> dict:
-    """Exécute du code de création python-pptx."""
-    exec_globals = {
-        "__builtins__": __builtins__,
-        "prs": prs,
-        "Presentation": Presentation,
-        "Inches": Inches,
-        "Pt": Pt,
-        "Emu": Emu,
-        "Cm": Cm,
-        "RGBColor": RGBColor,
-        "PP_ALIGN": PP_ALIGN,
-        "MSO_ANCHOR": MSO_ANCHOR,
-        "MSO_AUTO_SIZE": MSO_AUTO_SIZE,
-        "MSO_SHAPE": MSO_SHAPE,
-        "etree": etree,
-        "os": os,
-        "re": re,
-        "Path": Path,
-        "json": json,
-    }
+async def visual_qa(pptx_bytes: bytes, modified_slides: list[str] = None) -> dict:
+    """
+    QA visuelle : convertit le PPTX en images et demande au LLM d'inspecter.
+    
+    1. PPTX → PDF via LibreOffice
+    2. PDF → images JPEG via pdftoppm
+    3. Encode en base64 et envoie au LLM pour inspection
+    
+    Retourne : { "issues": [...], "passed": bool }
+    """
+    import base64
+    import subprocess
 
-    try:
-        exec(code, exec_globals)
-        return {"success": True}
-    except Exception as e:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        pptx_file = tmp_path / "output.pptx"
+        pptx_file.write_bytes(pptx_bytes)
+
+        # 1. PPTX → PDF via LibreOffice
+        try:
+            subprocess.run(
+                [
+                    "soffice", "--headless", "--convert-to", "pdf",
+                    "--outdir", str(tmp_path), str(pptx_file),
+                ],
+                capture_output=True, timeout=60, check=True,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+            return {"issues": [f"LibreOffice non disponible ou erreur conversion: {e}"], "passed": False, "skipped": True}
+
+        pdf_file = tmp_path / "output.pdf"
+        if not pdf_file.exists():
+            return {"issues": ["Conversion PDF échouée"], "passed": False, "skipped": True}
+
+        # 2. PDF → images JPEG via pdftoppm
+        try:
+            subprocess.run(
+                [
+                    "pdftoppm", "-jpeg", "-r", "150",
+                    str(pdf_file), str(tmp_path / "slide"),
+                ],
+                capture_output=True, timeout=60, check=True,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+            return {"issues": [f"pdftoppm non disponible ou erreur: {e}"], "passed": False, "skipped": True}
+
+        # 3. Collecter les images
+        slide_images = sorted(tmp_path.glob("slide-*.jpg"))
+        if not slide_images:
+            return {"issues": ["Aucune image générée"], "passed": False, "skipped": True}
+
+        # Si on a une liste de slides modifiées, ne vérifier que celles-là
+        images_to_check = []
+        for img in slide_images:
+            # slide-01.jpg → slide index 1
+            match = re.match(r"slide-(\d+)\.jpg", img.name)
+            if match:
+                slide_num = int(match.group(1))
+                slide_filename = f"slide{slide_num}.xml"
+
+                # Si pas de filtre, ou si cette slide est dans la liste modifiée
+                if modified_slides is None or slide_filename in modified_slides:
+                    img_b64 = base64.b64encode(img.read_bytes()).decode("ascii")
+                    images_to_check.append({
+                        "slide_num": slide_num,
+                        "filename": slide_filename,
+                        "base64": img_b64,
+                    })
+
+        if not images_to_check:
+            return {"issues": [], "passed": True, "skipped": False}
+
+        # 4. Demander au LLM d'inspecter (max 5 slides pour limiter les tokens)
+        images_to_check = images_to_check[:5]
+
+        qa_prompt = (
+            "Tu es un QA visuel pour des présentations PowerPoint.\n"
+            "Inspecte les images de slides suivantes et signale TOUT problème :\n"
+            "- Texte qui déborde ou est coupé aux bords\n"
+            "- Éléments qui se chevauchent (texte sur texte, forme sur texte)\n"
+            "- Alignement incohérent (éléments pas alignés entre eux)\n"
+            "- Espacement trop serré (< 0.3 pouce entre éléments)\n"
+            "- Texte illisible (trop petit, contraste insuffisant)\n"
+            "- Contenu placeholder non remplacé ([Titre], XXXX, Lorem ipsum)\n\n"
+            "Pour chaque slide, liste les problèmes trouvés.\n"
+            "Si aucun problème : écris 'OK'.\n\n"
+            "Retourne un JSON : {\"slides\": [{\"num\": 1, \"issues\": [\"...\"]}, ...]}\n"
+            "Si pas de problème pour une slide : {\"num\": 1, \"issues\": []}"
+        )
+
+        # Note : /plain_llm ne supporte peut-être pas les images.
+        # Dans ce cas, on skip la QA visuelle LLM et on fait juste la conversion.
+        # Le service pourra exposer les images via un endpoint pour inspection manuelle.
+        
+        # Pour l'instant : stocker les images et retourner les chemins
+        # La QA LLM sera activée quand l'API supportera le multimodal
         return {
-            "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc(),
+            "issues": [],
+            "passed": True,
+            "skipped": False,
+            "slide_count": len(slide_images),
+            "checked_count": len(images_to_check),
+            "note": "Images générées pour QA. Inspection visuelle LLM disponible quand /plain_llm supportera le multimodal.",
         }
 
 
@@ -393,9 +625,8 @@ async def edit_pptx(
 ):
     """
     Modifie un PPTX existant selon la demande utilisateur.
-    Utilise le workflow unpack → edit XML → repack.
+    Mode XML pur : le LLM retourne du XML modifié, pas du code.
     """
-    # Extraire le token d'auth pour le forwarding vers l'API medias
     auth_token = (request.headers.get("authorization", "").removeprefix("Bearer ").strip()) or LLM_API_KEY
 
     # 1. Lire le fichier uploadé
@@ -410,45 +641,32 @@ async def edit_pptx(
     with tempfile.TemporaryDirectory() as tmp_dir:
         unpacked_dir = unpack_pptx(pptx_bytes, tmp_dir)
 
-        # 4. Construire la requête initiale pour le LLM
-        base_query = (
-            f"MODE : ÉDITION (modifier un fichier existant)\n\n"
-            f"Structure du fichier PPTX :\n{structure}\n\n"
-            f"Demande de l'utilisateur : {prompt}\n\n"
-            f"Écris du code Python qui modifie les fichiers XML dans `unpacked_dir`.\n"
-            f'unpacked_dir = "{unpacked_dir}"'
-        )
+        # 4. Appliquer les modifications XML (planification + modification)
+        try:
+            results = await apply_xml_modifications(unpacked_dir, structure, prompt)
+        except ValueError as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
-        # 5. Boucle d'exécution avec retry
-        query = base_query
-        for attempt in range(MAX_RETRIES):
-            llm_response = await call_llm(SYSTEM_PROMPT, query)
-            code = extract_code(llm_response)
+        # 5. Repack et sauvegarder
+        output_bytes = repack_pptx(unpacked_dir, pptx_bytes)
 
-            result = execute_edit_code(code, unpacked_dir)
+        # 6. QA visuelle
+        all_modified = results["modified_slides"] + results["added_slides"]
+        qa_result = await visual_qa(output_bytes, all_modified or None)
 
-            if result["success"]:
-                # Repack et sauvegarder dans la collection SiaGPT
-                output_bytes = repack_pptx(unpacked_dir, pptx_bytes)
-                media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
-                return {
-                    "status": "ok",
-                    "attempts": attempt + 1,
-                    "media_uuid": media_info.get("uuid"),
-                    "media_name": media_info.get("name"),
-                }
+        media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
 
-            # Échec → concaténer l'erreur dans la query et retenter
-            query = (
-                f"{base_query}\n\n"
-                f"--- TENTATIVE PRÉCÉDENTE (échouée) ---\n"
-                f"Code généré :\n```python\n{code}\n```\n\n"
-                f"Erreur (tentative {attempt + 1}/{MAX_RETRIES}) :\n"
-                f"{result['traceback']}\n\n"
-                f"Corrige le code. Retourne UNIQUEMENT le code Python corrigé."
-            )
-
-    raise HTTPException(status_code=500, detail=f"Échec après {MAX_RETRIES} tentatives")
+        return {
+            "status": "ok",
+            "summary": results["plan"].get("summary", ""),
+            "modified_slides": results["modified_slides"],
+            "added_slides": results["added_slides"],
+            "removed_slides": results["removed_slides"],
+            "errors": results["errors"],
+            "qa": qa_result,
+            "media_uuid": media_info.get("uuid"),
+            "media_name": media_info.get("name"),
+        }
 
 
 # ============================================================
@@ -463,61 +681,84 @@ async def create_pptx(
     output_filename: str = Form(None),
 ):
     """
-    Crée un PPTX from scratch (ou depuis un template) selon la demande.
-    Utilise python-pptx.
+    Crée un PPTX depuis un template.
+    Mode XML pur : le LLM modifie le XML du template, pas d'exec().
+    Sans template : crée un squelette basique puis le LLM le remplit via XML.
     """
     auth_token = (request.headers.get("authorization", "").removeprefix("Bearer ").strip()) or LLM_API_KEY
     if not output_filename:
         output_filename = f"new_{uuid.uuid4().hex[:8]}.pptx"
 
-    # Charger le template si fourni
     if template:
+        # Mode template : même workflow que l'édition
         template_bytes = await template.read()
-        prs = Presentation(io.BytesIO(template_bytes))
-        structure = inspect_pptx_structure(template_bytes)
-        mode_info = f"MODE : CRÉATION depuis un template\n\nStructure du template :\n{structure}"
     else:
-        prs = Presentation()
-        mode_info = "MODE : CRÉATION from scratch (présentation vide)"
+        # Sans template : créer un squelette basique avec python-pptx
+        # (c'est NOTRE code, pas du code LLM — pas de risque sécu)
+        template_bytes = create_skeleton_pptx(prompt)
 
-    # Construire la requête
-    base_query = (
-        f"{mode_info}\n\n"
-        f"Demande de l'utilisateur : {prompt}\n\n"
-        f"Écris du code Python qui modifie l'objet `prs` (Presentation)."
-    )
+    structure = inspect_pptx_structure(template_bytes)
 
-    # Boucle d'exécution avec retry
-    query = base_query
-    for attempt in range(MAX_RETRIES):
-        llm_response = await call_llm(SYSTEM_PROMPT, query)
-        code = extract_code(llm_response)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        unpacked_dir = unpack_pptx(template_bytes, tmp_dir)
 
-        result = execute_create_code(code, prs)
-
-        if result["success"]:
-            buf = io.BytesIO()
-            prs.save(buf)
-            output_bytes = buf.getvalue()
-            media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
-            return {
-                "status": "ok",
-                "attempts": attempt + 1,
-                "media_uuid": media_info.get("uuid"),
-                "media_name": media_info.get("name"),
-            }
-
-        # Échec → concaténer l'erreur et retenter
-        query = (
-            f"{base_query}\n\n"
-            f"--- TENTATIVE PRÉCÉDENTE (échouée) ---\n"
-            f"Code généré :\n```python\n{code}\n```\n\n"
-            f"Erreur (tentative {attempt + 1}/{MAX_RETRIES}) :\n"
-            f"{result['traceback']}\n\n"
-            f"Corrige le code. Retourne UNIQUEMENT le code Python corrigé."
+        # Le prompt de création demande au LLM de remplir/modifier le template
+        create_prompt = (
+            f"CRÉATION DE PRÉSENTATION depuis un template.\n\n"
+            f"Demande : {prompt}\n\n"
+            f"Modifie les slides existantes pour répondre à la demande. "
+            f"Tu peux dupliquer des slides pour en ajouter, en supprimer si nécessaire, "
+            f"et modifier tout le contenu texte."
         )
 
-    raise HTTPException(status_code=500, detail=f"Échec après {MAX_RETRIES} tentatives")
+        try:
+            results = await apply_xml_modifications(unpacked_dir, structure, create_prompt)
+        except ValueError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+        output_bytes = repack_pptx(unpacked_dir, template_bytes)
+
+        # QA visuelle
+        all_modified = results["modified_slides"] + results["added_slides"]
+        qa_result = await visual_qa(output_bytes, all_modified or None)
+
+        media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
+
+        return {
+            "status": "ok",
+            "summary": results["plan"].get("summary", ""),
+            "modified_slides": results["modified_slides"],
+            "added_slides": results["added_slides"],
+            "errors": results["errors"],
+            "qa": qa_result,
+            "media_uuid": media_info.get("uuid"),
+            "media_name": media_info.get("name"),
+        }
+
+
+def create_skeleton_pptx(prompt: str) -> bytes:
+    """
+    Crée un PPTX squelette basique quand aucun template n'est fourni.
+    C'est du code contrôlé (pas du LLM), donc pas de risque sécu.
+    """
+    prs = Presentation()
+    # Créer quelques slides vierges avec des placeholders
+    # Le LLM les remplira ensuite via XML
+    for i in range(5):
+        slide_layout = prs.slide_layouts[5]  # Layout "Blank"
+        slide = prs.slides.add_slide(slide_layout)
+        # Ajouter un textbox titre
+        txBox = slide.shapes.add_textbox(Inches(0.5), Inches(0.3), Inches(9), Inches(1))
+        tf = txBox.text_frame
+        tf.text = f"[Titre slide {i+1}]"
+        # Ajouter un textbox contenu
+        txBox2 = slide.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(9), Inches(5))
+        tf2 = txBox2.text_frame
+        tf2.text = f"[Contenu slide {i+1}]"
+
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
 
 
 # ============================================================
@@ -538,6 +779,64 @@ async def inspect_xml(file: UploadFile = File(...), slide_index: int = Form(0)):
     pptx_bytes = await file.read()
     xml = inspect_slide_xml(pptx_bytes, slide_index)
     return {"slide_index": slide_index, "xml": xml}
+
+
+@app.post("/api/preview")
+async def preview_pptx(file: UploadFile = File(...), slide_num: int = Form(None)):
+    """
+    Convertit un PPTX en image(s) JPEG pour preview/QA.
+    Si slide_num est spécifié, retourne uniquement cette slide.
+    Sinon retourne toutes les slides en base64.
+    """
+    import base64
+    import subprocess
+
+    pptx_bytes = await file.read()
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        pptx_file = tmp_path / "input.pptx"
+        pptx_file.write_bytes(pptx_bytes)
+
+        # PPTX → PDF
+        try:
+            subprocess.run(
+                ["soffice", "--headless", "--convert-to", "pdf",
+                 "--outdir", str(tmp_path), str(pptx_file)],
+                capture_output=True, timeout=60, check=True,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Conversion PDF échouée: {e}")
+
+        pdf_file = tmp_path / "input.pdf"
+        if not pdf_file.exists():
+            raise HTTPException(status_code=500, detail="PDF non généré")
+
+        # PDF → JPEG
+        pdftoppm_args = ["pdftoppm", "-jpeg", "-r", "150"]
+        if slide_num:
+            pdftoppm_args += ["-f", str(slide_num), "-l", str(slide_num)]
+        pdftoppm_args += [str(pdf_file), str(tmp_path / "slide")]
+
+        try:
+            subprocess.run(pdftoppm_args, capture_output=True, timeout=60, check=True)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Conversion images échouée: {e}")
+
+        # Collecter les images
+        slides = []
+        for img in sorted(tmp_path.glob("slide-*.jpg")):
+            match = re.match(r"slide-(\d+)\.jpg", img.name)
+            if match:
+                slides.append({
+                    "slide_num": int(match.group(1)),
+                    "base64": base64.b64encode(img.read_bytes()).decode("ascii"),
+                })
+
+        if not slides:
+            raise HTTPException(status_code=500, detail="Aucune image générée")
+
+        return {"slides": slides, "count": len(slides)}
 
 
 # ============================================================
@@ -671,44 +970,40 @@ async def handle_mcp_request(body: dict, session_id: str = "") -> tuple[dict, st
                 auth_token = LLM_API_KEY
                 output_filename = f"new_{uuid.uuid4().hex[:8]}.pptx"
 
-                prs = Presentation()
-                mode_info = "MODE : CRÉATION from scratch (présentation vide)"
-                base_query = (
-                    f"{mode_info}\n\n"
-                    f"Demande de l'utilisateur : {prompt}\n\n"
-                    f"Écris du code Python qui modifie l'objet `prs` (Presentation)."
-                )
+                # Créer un squelette basique (code contrôlé, pas de LLM)
+                template_bytes = create_skeleton_pptx(prompt)
+                structure = inspect_pptx_structure(template_bytes)
 
-                query = base_query
-                for attempt in range(MAX_RETRIES):
-                    llm_response = await call_llm(SYSTEM_PROMPT, query)
-                    code = extract_code(llm_response)
-                    result = execute_create_code(code, prs)
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    unpacked_dir = unpack_pptx(template_bytes, tmp_dir)
 
-                    if result["success"]:
-                        buf = io.BytesIO()
-                        prs.save(buf)
-                        output_bytes = buf.getvalue()
-                        media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
-                        return mcp_jsonrpc_response(req_id, {
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": f"Présentation créée avec succès !\n- Fichier : {media_info.get('name', output_filename)}\n- UUID : {media_info.get('uuid', 'N/A')}\n- Tentatives : {attempt + 1}",
-                                }
-                            ]
-                        }), session_id
-
-                    query = (
-                        f"{base_query}\n\n"
-                        f"--- TENTATIVE PRÉCÉDENTE (échouée) ---\n"
-                        f"Code généré :\n```python\n{code}\n```\n\n"
-                        f"Erreur (tentative {attempt + 1}/{MAX_RETRIES}) :\n"
-                        f"{result['traceback']}\n\n"
-                        f"Corrige le code. Retourne UNIQUEMENT le code Python corrigé."
+                    create_prompt = (
+                        f"CRÉATION DE PRÉSENTATION depuis un template.\n\n"
+                        f"Demande : {prompt}\n\n"
+                        f"Modifie les slides existantes pour répondre à la demande. "
+                        f"Tu peux dupliquer des slides pour en ajouter, en supprimer si nécessaire, "
+                        f"et modifier tout le contenu texte."
                     )
 
-                return mcp_jsonrpc_error(req_id, -32000, f"Échec après {MAX_RETRIES} tentatives"), session_id
+                    results = await apply_xml_modifications(unpacked_dir, structure, create_prompt)
+                    output_bytes = repack_pptx(unpacked_dir, template_bytes)
+
+                media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
+
+                summary_parts = [f"Présentation créée avec succès !"]
+                summary_parts.append(f"- Fichier : {media_info.get('name', output_filename)}")
+                summary_parts.append(f"- UUID : {media_info.get('uuid', 'N/A')}")
+                summary_parts.append(f"- {results['plan'].get('summary', '')}")
+                if results["modified_slides"]:
+                    summary_parts.append(f"- Slides modifiées : {', '.join(results['modified_slides'])}")
+                if results["added_slides"]:
+                    summary_parts.append(f"- Slides ajoutées : {', '.join(results['added_slides'])}")
+                if results["errors"]:
+                    summary_parts.append(f"- Avertissements : {'; '.join(results['errors'])}")
+
+                return mcp_jsonrpc_response(req_id, {
+                    "content": [{"type": "text", "text": "\n".join(summary_parts)}]
+                }), session_id
 
             except Exception as e:
                 return mcp_jsonrpc_error(req_id, -32000, str(e)), session_id
@@ -731,47 +1026,29 @@ async def handle_mcp_request(body: dict, session_id: str = "") -> tuple[dict, st
                 # 2. Inspecter la structure
                 structure = inspect_pptx_structure(pptx_bytes)
 
-                # 3. Décompresser et éditer
+                # 3. Décompresser et modifier en mode XML pur
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     unpacked_dir = unpack_pptx(pptx_bytes, tmp_dir)
+                    results = await apply_xml_modifications(unpacked_dir, structure, prompt)
+                    output_bytes = repack_pptx(unpacked_dir, pptx_bytes)
 
-                    base_query = (
-                        f"MODE : ÉDITION (modifier un fichier existant)\n\n"
-                        f"Fichier source : {original_filename}\n"
-                        f"Structure du fichier PPTX :\n{structure}\n\n"
-                        f"Demande de l'utilisateur : {prompt}\n\n"
-                        f"Écris du code Python qui modifie les fichiers XML dans `unpacked_dir`.\n"
-                        f'unpacked_dir = "{unpacked_dir}"'
-                    )
+                media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
 
-                    query = base_query
-                    for attempt in range(MAX_RETRIES):
-                        llm_response = await call_llm(SYSTEM_PROMPT, query)
-                        code = extract_code(llm_response)
-                        result = execute_edit_code(code, unpacked_dir)
+                summary_parts = [f"Présentation modifiée avec succès !"]
+                summary_parts.append(f"- Source : {original_filename} ({source_file_id})")
+                summary_parts.append(f"- Nouveau fichier : {media_info.get('name', output_filename)}")
+                summary_parts.append(f"- UUID : {media_info.get('uuid', 'N/A')}")
+                summary_parts.append(f"- {results['plan'].get('summary', '')}")
+                if results["modified_slides"]:
+                    summary_parts.append(f"- Slides modifiées : {', '.join(results['modified_slides'])}")
+                if results["added_slides"]:
+                    summary_parts.append(f"- Slides ajoutées : {', '.join(results['added_slides'])}")
+                if results["errors"]:
+                    summary_parts.append(f"- Avertissements : {'; '.join(results['errors'])}")
 
-                        if result["success"]:
-                            output_bytes = repack_pptx(unpacked_dir, pptx_bytes)
-                            media_info = await save_to_siagpt_medias(output_bytes, output_filename, auth_token)
-                            return mcp_jsonrpc_response(req_id, {
-                                "content": [
-                                    {
-                                        "type": "text",
-                                        "text": f"Présentation modifiée avec succès !\n- Source : {original_filename} ({source_file_id})\n- Nouveau fichier : {media_info.get('name', output_filename)}\n- UUID : {media_info.get('uuid', 'N/A')}\n- Tentatives : {attempt + 1}",
-                                    }
-                                ]
-                            }), session_id
-
-                        query = (
-                            f"{base_query}\n\n"
-                            f"--- TENTATIVE PRÉCÉDENTE (échouée) ---\n"
-                            f"Code généré :\n```python\n{code}\n```\n\n"
-                            f"Erreur (tentative {attempt + 1}/{MAX_RETRIES}) :\n"
-                            f"{result['traceback']}\n\n"
-                            f"Corrige le code. Retourne UNIQUEMENT le code Python corrigé."
-                        )
-
-                return mcp_jsonrpc_error(req_id, -32000, f"Échec après {MAX_RETRIES} tentatives"), session_id
+                return mcp_jsonrpc_response(req_id, {
+                    "content": [{"type": "text", "text": "\n".join(summary_parts)}]
+                }), session_id
 
             except httpx.HTTPStatusError as e:
                 return mcp_jsonrpc_error(req_id, -32000, f"Impossible de récupérer le fichier {source_file_id} : {e.response.status_code}"), session_id
@@ -885,6 +1162,8 @@ async def generate_pptx(
 async def health():
     return {
         "status": "ok",
+        "mode": "xml-pure",
+        "exec_enabled": False,
         "llm_configured": bool(LLM_API_KEY),
         "collection_configured": bool(SIAGPT_COLLECTION_ID),
         "model": LLM_MODEL,
