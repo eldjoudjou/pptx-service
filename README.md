@@ -270,15 +270,16 @@ Si le LLM invente un tag (`<p:monTrucInventé>`), les checks structurels ne le v
 
 ```
 pptx-service/
-├── main.py              ← Service FastAPI : REST + MCP + orchestration workflow
-├── pptx_tools.py        ← Manipulation PPTX : unpack, pack, clean, duplicate
-├── pptx_validate.py     ← Validation : structurelle + XSD
-├── schemas/             ← Schemas XSD Office Open XML (dans Docker)
-├── system_prompt.md     ← Instructions données au LLM Ouvrier
-├── skill/               ← Documentation de référence (PAS dans Docker)
+├── main.py                ← Service FastAPI : REST + MCP + orchestration workflow
+├── pptx_tools.py          ← Manipulation PPTX : unpack, pack, clean, duplicate
+├── pptx_validate.py       ← Validation : structurelle + XSD
+├── schemas/               ← Schemas XSD Office Open XML (dans Docker)
+├── system_prompt.md       ← Instructions pour le LLM Ouvrier (modif XML)
+├── system_prompt_chef.md  ← Instructions pour le LLM Chef (SiaGPT, choix des tools)
+├── skill/                 ← Documentation de référence (PAS dans Docker)
 ├── Dockerfile
 ├── requirements.txt
-├── rebuild.sh           ← Script dev : rebuild Docker + relance
+├── rebuild.sh             ← Script dev : rebuild Docker + relance
 ├── .env.example
 └── .gitignore
 ```
@@ -303,9 +304,13 @@ Validation complète en deux niveaux. Détaillé ci-dessus.
 
 Schemas XSD officiels de la norme Office Open XML (ISO/IEC 29500), copiés dans Docker pour la validation en runtime. Contient `pml.xsd` (PresentationML), `dml-main.xsd` (DrawingML), `opc-*.xsd` (packaging).
 
-### system_prompt.md (~220 lignes)
+### system_prompt.md (~240 lignes)
 
-Le "cahier des charges" du LLM Ouvrier. Définit les 2 phases (planification JSON + modification XML), le format XML PowerPoint, les bonnes pratiques et les guidelines de design. **C'est le levier principal pour améliorer la qualité.**
+Le "cahier des charges" du LLM Ouvrier. Définit les 2 phases (planification JSON + modification XML), le format XML PowerPoint, les bonnes pratiques et les guidelines de design. **C'est le levier principal pour améliorer la qualité des modifications XML.**
+
+### system_prompt_chef.md (~100 lignes)
+
+Les instructions pour le LLM Chef (celui de SiaGPT). Définit quand utiliser `generate_pptx` vs `edit_pptx`, comment choisir le bon template, comment rédiger un bon prompt, et quand poser des questions à l'utilisateur. **À copier dans la config du Chef (Langflow, system prompt SiaGPT, etc.)** Contient une section templates à remplir quand les templates Sia seront uploadés.
 
 ### skill/ — Documentation de référence
 
