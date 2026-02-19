@@ -64,6 +64,7 @@ SIAGPT_MEDIAS_URL = os.environ.get("SIAGPT_MEDIAS_URL", "https://backend.siagpt.
 SIAGPT_COLLECTION_ID = os.environ.get("SIAGPT_COLLECTION_ID", "")  # UUID de la collection cible
 
 SYSTEM_PROMPT_PATH = os.environ.get("SYSTEM_PROMPT_PATH", "/app/system_prompt.md")
+STYLE_CONFIG_PATH = os.environ.get("STYLE_CONFIG_PATH", "/app/sia_config.md")
 
 # Retry
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "4"))
@@ -123,11 +124,24 @@ async def download_from_siagpt_medias(file_uuid: str, auth_token: str) -> tuple[
 
 
 def load_system_prompt() -> str:
-    """Charge le system prompt depuis le fichier, avec fallback minimal."""
+    """
+    Charge le system prompt + la config style.
+    Le prompt est générique (XML, phases, règles).
+    La config est interchangeable (couleurs, polices, layouts).
+    """
     try:
-        return Path(SYSTEM_PROMPT_PATH).read_text(encoding="utf-8")
+        prompt = Path(SYSTEM_PROMPT_PATH).read_text(encoding="utf-8")
     except FileNotFoundError:
-        return "Tu es un expert en manipulation PowerPoint via XML. Retourne uniquement du XML."
+        prompt = "Tu es un expert en manipulation PowerPoint via XML. Retourne uniquement du XML."
+
+    try:
+        config = Path(STYLE_CONFIG_PATH).read_text(encoding="utf-8")
+        prompt += "\n\n---\n\n" + config
+        logger.info(f"Config style chargée depuis {STYLE_CONFIG_PATH}")
+    except FileNotFoundError:
+        logger.warning(f"Config style non trouvée ({STYLE_CONFIG_PATH}) — utilisation du prompt seul")
+
+    return prompt
 
 SYSTEM_PROMPT = load_system_prompt()
 
