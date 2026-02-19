@@ -17,7 +17,11 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+import logging
+
 import defusedxml.minidom
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -71,7 +75,7 @@ def _pretty_print_xml(xml_file: Path) -> None:
         dom = defusedxml.minidom.parseString(content)
         xml_file.write_bytes(dom.toprettyxml(indent="  ", encoding="utf-8"))
     except Exception:
-        pass  # Fichiers non-XML (binaires) ignorés silencieusement
+        logger.debug("Skipping pretty-print for non-XML file: %s", xml_file.name)
 
 
 def _escape_smart_quotes(xml_file: Path) -> None:
@@ -82,7 +86,7 @@ def _escape_smart_quotes(xml_file: Path) -> None:
             content = content.replace(char, entity)
         xml_file.write_text(content, encoding="utf-8")
     except Exception:
-        pass
+        logger.debug("Skipping smart quote escape for: %s", xml_file.name)
 
 
 # ============================================================
@@ -126,7 +130,7 @@ def _restore_smart_quotes(xml_file: Path) -> None:
             content = content.replace(entity, char)
         xml_file.write_text(content, encoding="utf-8")
     except Exception:
-        pass
+        logger.debug("Skipping smart quote restore for: %s", xml_file.name)
 
 
 def _condense_xml(xml_file: Path) -> None:
@@ -153,7 +157,7 @@ def _condense_xml(xml_file: Path) -> None:
 
         xml_file.write_bytes(dom.toxml(encoding="UTF-8"))
     except Exception:
-        pass  # Fichiers qui ne parsent pas → laisser tels quels
+        logger.debug("Skipping XML condensation for: %s", xml_file.name)
 
 
 # ============================================================

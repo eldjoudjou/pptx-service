@@ -1,7 +1,7 @@
 #!/bin/bash
-echo "=== Arrêt des containers ==="
-docker stop $(docker ps -q) 2>/dev/null
-docker rm $(docker ps -aq) 2>/dev/null
+echo "=== Arrêt du container pptx-service ==="
+docker stop pptx-service 2>/dev/null
+docker rm pptx-service 2>/dev/null
 
 echo "=== Arrêt ngrok ==="
 killall ngrok 2>/dev/null

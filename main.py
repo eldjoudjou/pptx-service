@@ -73,8 +73,6 @@ MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "4"))
 # Initialisation
 # ============================================================
 
-# Dossier temporaire de travail
-Path("/tmp/pptx-work").mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
@@ -638,6 +636,8 @@ async def edit_pptx(
     output_filename: str = Form(None),
 ):
     """Modifie un PPTX existant. Mode XML pur."""
+    # Fallback sur LLM_API_KEY pour les appels internes sans token utilisateur
+    # (ex: appels MCP depuis SiaGPT où le service agit en son propre nom)
     auth_token = (request.headers.get("authorization", "").removeprefix("Bearer ").strip()) or LLM_API_KEY
     pptx_bytes = await file.read()
     try:
@@ -658,6 +658,7 @@ async def create_pptx(
     output_filename: str = Form(None),
 ):
     """Crée un PPTX depuis un template (ou un squelette vierge). Mode XML pur."""
+    # Fallback sur LLM_API_KEY (voir commentaire dans edit_pptx)
     auth_token = (request.headers.get("authorization", "").removeprefix("Bearer ").strip()) or LLM_API_KEY
     template_bytes = await template.read() if template else None
     try:
@@ -720,12 +721,12 @@ async def inspect_xml(file: UploadFile = File(...), slide_index: int = Form(0)):
 mcp_sessions: dict[str, asyncio.Queue] = {}
 
 
-def mcp_jsonrpc_response(req_id, result):
+def mcp_jsonrpc_response(req_id: str | int | None, result: dict) -> dict:
     """Construit une réponse JSON-RPC 2.0."""
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
-def mcp_jsonrpc_error(req_id, code, message):
+def mcp_jsonrpc_error(req_id: str | int | None, code: int, message: str) -> dict:
     """Construit une erreur JSON-RPC 2.0."""
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
@@ -949,6 +950,7 @@ async def mcp_messages(request: Request, session_id: str = ""):
 @app.post("/api/generate")
 async def generate_pptx(request: Request):
     """Endpoint unifié — accepte JSON ou form-data, crée ou modifie un PPTX."""
+    # Fallback sur LLM_API_KEY (voir commentaire dans edit_pptx)
     auth_token = (request.headers.get("authorization", "").removeprefix("Bearer ").strip()) or LLM_API_KEY
     content_type = request.headers.get("content-type", "")
 
@@ -1007,13 +1009,14 @@ async def root(request: Request):
     if request.method == "POST":
         try:
             body = await request.json()
-            if "jsonrpc" in body:
-                # C'est une requête MCP
-                session_id = request.headers.get("mcp-session-id", "")
-                response, session_id = await handle_mcp_request(body, session_id)
-                if response is None:
-                    return JSONResponse({}, status_code=202, headers={"mcp-session-id": session_id})
-                return JSONResponse(content=response, headers={"mcp-session-id": session_id})
-        except Exception:
-            pass
+        except (json.JSONDecodeError, ValueError):
+            return JSONResponse({"status": "ok", "service": "pptx-service"})
+
+        if "jsonrpc" in body:
+            session_id = request.headers.get("mcp-session-id", "")
+            response, session_id = await handle_mcp_request(body, session_id)
+            if response is None:
+                return JSONResponse({}, status_code=202, headers={"mcp-session-id": session_id})
+            return JSONResponse(content=response, headers={"mcp-session-id": session_id})
+
     return JSONResponse({"status": "ok", "service": "pptx-service"})

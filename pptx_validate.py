@@ -19,8 +19,12 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+import logging
+
 import defusedxml.minidom
 import lxml.etree
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -245,7 +249,7 @@ def _repair_whitespace(xml_files: list[Path]) -> int:
             if modified:
                 xml_file.write_bytes(dom.toxml(encoding="UTF-8"))
         except Exception:
-            pass
+            logger.debug("Skipping whitespace repair for: %s", xml_file.name)
     return repairs
 
 
@@ -335,6 +339,7 @@ def _check_unique_ids(xml_files: list[Path], base: Path) -> list[str]:
                     else:
                         file_ids[id_value] = tag
         except Exception:
+            logger.debug("Skipping ID check for: %s", f.name)
             continue
     return errors
 
@@ -403,6 +408,7 @@ def _check_content_types(base: Path) -> list[str]:
                         f"pas déclaré dans [Content_Types].xml"
                     )
             except Exception:
+                logger.debug("Skipping content type check for: %s", xml_file.name)
                 continue
     except Exception as e:
         errors.append(f"Erreur parsing [Content_Types].xml: {e}")
@@ -434,6 +440,7 @@ def _check_slide_layout_ids(base: Path) -> list[str]:
                         f"r:id='{rid}' introuvable dans les relations"
                     )
         except Exception:
+            logger.debug("Skipping layout ID check for: %s", master.name)
             continue
     return errors
 
@@ -454,6 +461,7 @@ def _check_no_duplicate_layouts(base: Path) -> list[str]:
                     f"{layout_count} slideLayout (attendu: 1)"
                 )
         except Exception:
+            logger.debug("Skipping duplicate layout check for: %s", rels_file.name)
             continue
     return errors
 
@@ -472,6 +480,7 @@ def _check_notes_slides(base: Path) -> list[str]:
                     target = rel.get("Target", "").replace("../", "")
                     notes_refs.setdefault(target, []).append(slide_name)
         except Exception:
+            logger.debug("Skipping notes check for: %s", rels_file.name)
             continue
 
     for target, slides in notes_refs.items():
@@ -525,8 +534,6 @@ def _check_xsd(xml_files: list[Path], base: Path, original_bytes: bytes = None) 
         temp_obj = tempfile.TemporaryDirectory()
         original_dir = Path(temp_obj.name)
         try:
-            with zipfile.ZipFile(tempfile.SpooledTemporaryFile()) as _:
-                pass  # juste pour vérifier que zipfile marche
             import io
             with zipfile.ZipFile(io.BytesIO(original_bytes), "r") as zf:
                 zf.extractall(original_dir)
