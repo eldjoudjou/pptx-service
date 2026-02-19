@@ -64,7 +64,7 @@ Le service PPTX télécharge le template par son UUID, l'analyse lui-même, et s
 
 | Template | UUID | Usage type |
 |----------|------|------------|
-| Template Master Sia | `019c7560-0006-7254-a0c1-f17a9b7e3f72` | Tout usage — ~80 layouts variés (covers, agenda, dividers, contenu, bio, CV, data, process, closing) |
+| Template Master Sia | *(renseigner l'UUID du fichier dans la collection)* | Tout usage — ~80 layouts variés (covers, agenda, dividers, contenu, bio, CV, data, process, closing) |
 
 <!--
   Exemples :
