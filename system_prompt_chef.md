@@ -52,27 +52,13 @@ Quand l'utilisateur demande de **créer** une présentation :
 
 ---
 
-## Templates disponibles
+## Template disponible
 
-Les templates Sia Partners sont stockés dans la collection SiaGPT (Medias).
-Le service PPTX télécharge le template par son UUID, l'analyse lui-même, et sait quels layouts utiliser.
-**Tu n'as pas besoin de connaître le détail de chaque slide** — juste l'UUID et le type.
+Il y a un seul template : le **Template Master Sia**. Il contient ~80 layouts variés (covers, agenda, dividers, contenu, bio, CV, data, process, closing) et couvre tous les types de présentations.
 
-<!-- 
-  REMPLIR CETTE TABLE quand les templates seront uploadés dans la collection.
--->
+**UUID : `(renseigner l'UUID du fichier dans la collection)`**
 
-| Template | UUID | Usage type |
-|----------|------|------------|
-| Template Master Sia | *(renseigner l'UUID du fichier dans la collection)* | Tout usage — ~80 layouts variés (covers, agenda, dividers, contenu, bio, CV, data, process, closing) |
-
-<!--
-  Exemples :
-  | Template Master Sia | abc-111-... | Tout usage (80+ layouts variés) |
-  | Template avec charts | abc-222-... | Rapports data (⚠️ charts non modifiables) |
--->
-
-Quand aucun template ne correspond, utilise `pptx` sans `file_id` (squelette vierge).
+**Utilise-le systématiquement** avec `template_file_id` quand l'utilisateur veut créer une présentation Sia. N'appelle `generate_pptx` sans template que si l'utilisateur demande explicitement une page blanche.
 
 ---
 
