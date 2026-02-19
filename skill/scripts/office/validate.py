@@ -19,7 +19,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from validators import DOCXSchemaValidator, PPTXSchemaValidator, RedliningValidator
+from validators import PPTXSchemaValidator
 
 
 def main():
@@ -78,14 +78,6 @@ def main():
         unpacked_dir = path
 
     match file_extension:
-        case ".docx":
-            validators = [
-                DOCXSchemaValidator(unpacked_dir, original_file, verbose=args.verbose),
-            ]
-            if original_file:
-                validators.append(
-                    RedliningValidator(unpacked_dir, original_file, verbose=args.verbose, author=args.author)  
-                )
         case ".pptx":
             validators = [
                 PPTXSchemaValidator(unpacked_dir, original_file, verbose=args.verbose),

@@ -15,6 +15,7 @@ Sécurité : AUCUN exec() — le LLM retourne du XML, pas du code.
 import asyncio
 import io
 import json
+import logging
 import os
 import re
 import tempfile
@@ -29,6 +30,10 @@ from pptx.util import Inches
 from lxml import etree
 
 import pptx_tools
+import pptx_validate
+
+logger = logging.getLogger("pptx-service")
+logging.basicConfig(level=logging.INFO)
 
 # ============================================================
 # Configuration
@@ -118,6 +123,7 @@ async def download_from_siagpt_medias(file_uuid: str, auth_token: str) -> tuple[
 
 
 def load_system_prompt() -> str:
+    """Charge le system prompt depuis le fichier, avec fallback minimal."""
     try:
         return Path(SYSTEM_PROMPT_PATH).read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -207,9 +213,30 @@ def unpack_pptx(pptx_bytes: bytes, dest_dir: str) -> str:
 
 
 def repack_pptx(unpacked_dir: str, original_bytes: bytes = None) -> bytes:
-    """Repackage avec condensation XML, nettoyage et smart quotes."""
-    # Nettoyer les fichiers orphelins avant repackage
+    """Repackage avec validation complète, auto-repair, condensation XML et smart quotes."""
+    # Nettoyer les fichiers orphelins
     pptx_tools.clean(unpacked_dir)
+
+    # Validation complète (structurelle + XSD)
+    try:
+        result = pptx_validate.validate_pptx(unpacked_dir, original_bytes)
+        if result["repairs"]:
+            logger.info(f"Auto-repaired {result['repairs']} issue(s)")
+        if result["errors"]:
+            logger.warning(
+                f"Validation structurelle: {len(result['errors'])} erreur(s):\n"
+                + "\n".join(result["errors"][:10])
+            )
+        if result["xsd_errors"]:
+            logger.warning(
+                f"Validation XSD: {len(result['xsd_errors'])} erreur(s):\n"
+                + "\n".join(result["xsd_errors"][:10])
+            )
+        if result["valid"]:
+            logger.info("Validation PPTX: OK")
+    except Exception as e:
+        logger.warning(f"Validation PPTX skippée (erreur): {e}")
+
     return pptx_tools.pack(unpacked_dir, original_bytes)
 
 
@@ -904,6 +931,7 @@ async def generate_pptx(request: Request):
 
 @app.get("/health")
 async def health():
+    """Health check — retourne le statut et la configuration du service."""
     return {
         "status": "ok",
         "mode": "xml-pure",

@@ -1,11 +1,13 @@
 """
-pptx_tools.py — Outils spécialisés pour la manipulation de PPTX.
+pptx_tools.py — Manipulation de fichiers PPTX.
 
 Fonctions extraites et adaptées du skill PPTX d'Anthropic :
 - unpack : décompresse + pretty-print XML + escape smart quotes
 - pack : condense XML + repackage
 - clean : supprime slides orphelines, fichiers non-référencés
 - duplicate_slide : duplique une slide avec ses relations
+
+La validation est dans pptx_validate.py (module séparé).
 """
 
 import io
@@ -538,3 +540,4 @@ def add_slide_to_presentation(unpacked_dir: str, sld_id: int, r_id: str, positio
         )
 
     pres_path.write_text(pres_content, encoding="utf-8")
+

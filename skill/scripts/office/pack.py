@@ -19,7 +19,7 @@ from pathlib import Path
 
 import defusedxml.minidom
 
-from validators import DOCXSchemaValidator, PPTXSchemaValidator, RedliningValidator
+from validators import PPTXSchemaValidator
 
 def pack(
     input_directory: str,
@@ -75,19 +75,7 @@ def _run_validation(
     output_lines = []
     validators = []
 
-    if suffix == ".docx":
-        author = "Claude"
-        if infer_author_func:
-            try:
-                author = infer_author_func(unpacked_dir, original_file)
-            except ValueError as e:
-                print(f"Warning: {e} Using default author 'Claude'.", file=sys.stderr)
-
-        validators = [
-            DOCXSchemaValidator(unpacked_dir, original_file),
-            RedliningValidator(unpacked_dir, original_file, author=author),
-        ]
-    elif suffix == ".pptx":
+    if suffix == ".pptx":
         validators = [PPTXSchemaValidator(unpacked_dir, original_file)]
 
     if not validators:

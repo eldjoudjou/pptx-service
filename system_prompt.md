@@ -149,18 +149,68 @@ Copier les `<a:pPr>` du paragraphe original pour préserver l'espacement.
 - Supprimer des éléments `<a:endParaRPr>` qui définissent le style par défaut du paragraphe
 - Modifier la structure `<p:spTree>` sans préserver le `<p:nvSpPr>` de chaque shape
 
+### Adaptation de templates — Pièges courants
+
+Quand le contenu source a **moins d'items** que le template :
+- **Supprime les éléments entiers** (images, shapes, text boxes) — ne te contente pas de vider le texte
+- Un shape vide mais visible crée un "trou" dans la slide
+- Vérifie les visuels orphelins après suppression de texte
+
+Quand le contenu source a **plus d'items** que le template :
+- Le texte long peut déborder hors de la zone de texte
+- Préfère **découper/synthétiser** plutôt que tout entasser
+- Si possible, duplique la slide et répartis le contenu
+
+### Smart Quotes — Référence
+
+Quand tu ajoutes du texte avec des guillemets, utilise les entités XML :
+
+| Caractère | Unicode | Entité XML |
+|-----------|---------|------------|
+| `"` (ouvrant) | U+201C | `&#x201C;` |
+| `"` (fermant) | U+201D | `&#x201D;` |
+| `'` (ouvrant) | U+2018 | `&#x2018;` |
+| `'` (fermant) | U+2019 | `&#x2019;` |
+
+### Whitespace
+
+- Utilise `xml:space="preserve"` sur `<a:t>` si le texte commence ou finit par un espace
+- Exemple : `<a:t xml:space="preserve"> Texte avec espace initial</a:t>`
+
 ---
 
 ## Design
 
-- Palette cohérente : 1 couleur dominante, 1-2 secondaires, 1 accent
-- Chaque slide : au moins un élément visuel
-- Varier les layouts
+### Principes généraux
+
+- Palette cohérente : 1 couleur dominante (60-70%), 1-2 secondaires, 1 accent
+- Chaque slide : au moins un élément visuel (image, icône, shape, chart)
+- Varier les layouts (colonnes, grilles, callouts, timelines)
 - Titres 36-44pt bold (sz="3600" à sz="4400"), corps 14-16pt (sz="1400" à sz="1600")
 - Marges 0.5" minimum
 - Ne PAS répéter le même layout partout
 - Ne PAS centrer le corps de texte (sauf titres)
 - Ne PAS mettre de lignes décoratives sous les titres
+
+### Palettes de couleurs suggérées
+
+| Thème | Primaire | Secondaire | Accent |
+|-------|----------|------------|--------|
+| Midnight Executive | `1E2761` | `CADCFC` | `FFFFFF` |
+| Forest & Moss | `2C5F2D` | `97BC62` | `F5F5F5` |
+| Ocean Gradient | `065A82` | `1C7293` | `21295C` |
+| Charcoal Minimal | `36454F` | `F2F2F2` | `212121` |
+| Teal Trust | `028090` | `00A896` | `02C39A` |
+| Warm Terracotta | `B85042` | `E7E8D1` | `A7BEAE` |
+
+### Polices recommandées
+
+| Titres | Corps |
+|--------|-------|
+| Georgia | Calibri |
+| Arial Black | Arial |
+| Calibri | Calibri Light |
+| Trebuchet MS | Calibri |
 
 ### Règle d'or pour l'édition de templates
 
