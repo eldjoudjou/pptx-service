@@ -97,6 +97,66 @@ def _find_schemas_dir() -> Path:
 
 
 # ============================================================
+# Validation rapide d'un slide XML (pour le retry loop)
+# ============================================================
+
+def validate_slide_xml_string(xml_string: str) -> tuple[bool, str]:
+    """
+    Valide un XML de slide contre le schema PresentationML (pml.xsd).
+
+    Utilisé dans le retry loop de modify_slide_xml() pour détecter
+    les erreurs XSD AVANT d'écrire le fichier sur disque.
+
+    Vérifie :
+    1. XML bien formé (parsing)
+    2. Conformité XSD contre pml.xsd (grammaire PowerPoint)
+
+    Returns:
+        (True, "")           si valide
+        (False, "message")   si invalide (parsing ou XSD)
+    """
+    # 1. Vérifier que le XML se parse
+    try:
+        xml_doc = lxml.etree.ElementTree(
+            lxml.etree.fromstring(xml_string.encode("utf-8"))
+        )
+    except lxml.etree.XMLSyntaxError as e:
+        return False, f"XML mal formé : {e}"
+
+    # 2. Charger le schema pml.xsd
+    try:
+        schemas_dir = _find_schemas_dir()
+        schema_path = schemas_dir / SCHEMA_MAPPINGS["ppt"]
+        with open(schema_path, "rb") as xsd_fh:
+            parser = lxml.etree.XMLParser()
+            xsd_doc = lxml.etree.parse(xsd_fh, parser=parser, base_url=str(schema_path))
+            schema = lxml.etree.XMLSchema(xsd_doc)
+    except Exception:
+        # Schema indisponible → fallback sur validation parsing seule
+        return True, ""
+
+    # 3. Pré-traiter (même logique que _validate_one_file_xsd)
+    xml_doc = _strip_template_tags(xml_doc)
+    xml_doc = _strip_mc_ignorable(xml_doc)
+    xml_doc = _strip_non_ooxml(xml_doc)
+
+    # 4. Valider contre le schema
+    if schema.validate(xml_doc):
+        return True, ""
+
+    # Filtrer les erreurs bénignes connues
+    real_errors = []
+    for error in schema.error_log:
+        if not any(ignored in error.message for ignored in IGNORED_XSD_ERRORS):
+            real_errors.append(error.message)
+
+    if not real_errors:
+        return True, ""
+
+    return False, " | ".join(real_errors[:3])
+
+
+# ============================================================
 # Point d'entrée principal
 # ============================================================
 

@@ -213,29 +213,48 @@ def unpack_pptx(pptx_bytes: bytes, dest_dir: str) -> str:
 
 
 def repack_pptx(unpacked_dir: str, original_bytes: bytes = None) -> bytes:
-    """Repackage avec validation complète, auto-repair, condensation XML et smart quotes."""
+    """
+    Repackage avec validation complète, auto-repair, condensation XML et smart quotes.
+
+    Stratégie (comme Claude le fait manuellement) :
+    - Erreurs XSD sur slides → on les signale (le caller peut retenter)
+    - Erreurs structurelles → on les signale (le caller peut retenter)
+    - L'idée : ne jamais envoyer un fichier cassé, toujours retenter d'abord
+    """
     # Nettoyer les fichiers orphelins
     pptx_tools.clean(unpacked_dir)
 
     # Validation complète (structurelle + XSD)
+    validation_result = None
     try:
-        result = pptx_validate.validate_pptx(unpacked_dir, original_bytes)
-        if result["repairs"]:
-            logger.info(f"Auto-repaired {result['repairs']} issue(s)")
-        if result["errors"]:
-            logger.warning(
-                f"Validation structurelle: {len(result['errors'])} erreur(s):\n"
-                + "\n".join(result["errors"][:10])
-            )
-        if result["xsd_errors"]:
-            logger.warning(
-                f"Validation XSD: {len(result['xsd_errors'])} erreur(s):\n"
-                + "\n".join(result["xsd_errors"][:10])
-            )
-        if result["valid"]:
+        validation_result = pptx_validate.validate_pptx(unpacked_dir, original_bytes)
+        if validation_result["repairs"]:
+            logger.info(f"Auto-repaired {validation_result['repairs']} issue(s)")
+        if validation_result["valid"]:
             logger.info("Validation PPTX: OK")
     except Exception as e:
         logger.warning(f"Validation PPTX skippée (erreur): {e}")
+
+    # Collecter les erreurs non-réparables
+    blocking_errors = []
+    if validation_result:
+        # Erreurs structurelles = le fichier ne s'ouvrira probablement pas
+        if validation_result["errors"]:
+            blocking_errors.extend(
+                f"[STRUCTURE] {e}" for e in validation_result["errors"]
+            )
+        # Erreurs XSD nouvelles = le LLM a introduit des tags/attributs invalides
+        if validation_result["xsd_errors"]:
+            blocking_errors.extend(
+                f"[XSD] {e}" for e in validation_result["xsd_errors"]
+            )
+
+    if blocking_errors:
+        raise ValueError(
+            f"PPTX invalide — {len(blocking_errors)} erreur(s) détectée(s) :\n"
+            + "\n".join(f"  • {e}" for e in blocking_errors[:5])
+            + ("\n  ..." if len(blocking_errors) > 5 else "")
+        )
 
     return pptx_tools.pack(unpacked_dir, original_bytes)
 
@@ -391,7 +410,8 @@ async def modify_slide_xml(
         llm_response = await call_llm(SYSTEM_PROMPT, query)
         new_xml = extract_xml(llm_response)
 
-        is_valid, error_msg = validate_xml(new_xml)
+        # Validation forte : parsing + XSD (détecte les tags inventés)
+        is_valid, error_msg = pptx_validate.validate_slide_xml_string(new_xml)
         if is_valid:
             return new_xml
 
