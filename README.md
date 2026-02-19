@@ -57,6 +57,26 @@ SiaGPT Medias (collection)
 
 **C'est le Chef qui connaît les templates** (via son system prompt). Quand l'utilisateur dit "fais-moi une propale", le Chef sait qu'il faut utiliser le template "Proposition commerciale" et passe son UUID au service.
 
+### Template vs Config — séparation architecturale
+
+Un template Sia contient souvent des slides "guide de style" (palette de couleurs, règles d'utilisation, instructions). Ces slides sont de la **documentation pour humains**, pas des layouts de contenu.
+
+On sépare les deux :
+
+```
+TEMPLATE .pptx (= architecture)         CONFIG dans system_prompt.md (= style)
+──────────────────────────────           ──────────────────────────────────────
+Les layouts de contenu                   La palette Sia 2024 (couleurs par ref thème)
+Les positions des shapes                 La police Sora-SIA
+Les placeholders                         Les règles d'utilisation des couleurs
+La structure                             Les tailles de texte
+= ce que le LLM MODIFIE                 = ce que le LLM RESPECTE sans y toucher
+```
+
+Les slides guide (couleurs, "how to use", "delete before use") doivent être **supprimées** du template avant de l'uploader dans la collection. La config est extraite dans le system prompt de l'Ouvrier.
+
+Le LLM Ouvrier n'a pas besoin de "fiches techniques" des templates — il les analyse lui-même à l'étape INSPECT. Il a juste besoin de connaître les règles de style (config) pour produire un résultat cohérent avec la charte Sia.
+
 ### Le workflow complet
 
 #### Diagramme visuel (rendu par GitHub)
@@ -313,9 +333,8 @@ pptx-service/
 ├── pptx_tools.py          ← Manipulation PPTX : unpack, pack, clean, duplicate
 ├── pptx_validate.py       ← Validation : structurelle + XSD
 ├── schemas/               ← Schemas XSD Office Open XML (dans Docker)
-├── system_prompt.md       ← Instructions pour le LLM Ouvrier (modif XML)
+├── system_prompt.md       ← Instructions pour le LLM Ouvrier (modif XML + config Sia)
 ├── system_prompt_chef.md  ← Instructions pour le LLM Chef (SiaGPT, choix des tools)
-├── templates_reference.md ← Fiches techniques des templates Sia (pour le Chef)
 ├── skill/                 ← Documentation de référence (PAS dans Docker)
 ├── Dockerfile
 ├── requirements.txt
@@ -344,13 +363,18 @@ Validation complète en deux niveaux. Détaillé ci-dessus.
 
 Schemas XSD officiels de la norme Office Open XML (ISO/IEC 29500), copiés dans Docker pour la validation en runtime. Contient `pml.xsd` (PresentationML), `dml-main.xsd` (DrawingML), `opc-*.xsd` (packaging).
 
-### system_prompt.md (~240 lignes)
+### system_prompt.md (~300 lignes)
 
-Le "cahier des charges" du LLM Ouvrier. Définit les 2 phases (planification JSON + modification XML), le format XML PowerPoint, les bonnes pratiques et les guidelines de design. **C'est le levier principal pour améliorer la qualité des modifications XML.**
+Le "cahier des charges" du LLM Ouvrier. Contient :
+- Les 2 phases (planification JSON + modification XML)
+- Le format XML PowerPoint et les bonnes pratiques
+- **La config Sia Partners** : palette de couleurs "Sia 2024 01", police Sora-SIA, règles d'utilisation des couleurs par référence thème, catalogue des layouts disponibles
+
+La config style est séparée du template .pptx lui-même — le template est l'architecture (layouts, positions, shapes), le system prompt contient les règles de style (couleurs, polices, conventions). C'est le levier principal pour améliorer la qualité des modifications XML.
 
 ### system_prompt_chef.md (~100 lignes)
 
-Les instructions pour le LLM Chef (celui de SiaGPT). Définit quand utiliser `generate_pptx` vs `edit_pptx`, comment choisir le bon template, comment rédiger un bon prompt, et quand poser des questions à l'utilisateur. **À copier dans la config du Chef (Langflow, system prompt SiaGPT, etc.)** Contient une section templates à remplir quand les templates Sia seront uploadés.
+Les instructions pour le LLM Chef (celui de SiaGPT). Définit quand utiliser `generate_pptx` vs `edit_pptx`, comment choisir le bon template (par UUID), comment rédiger un bon prompt, et quand poser des questions à l'utilisateur. Le Chef n'a **pas** besoin de connaître le détail des templates — le service les analyse lui-même.
 
 ### skill/ — Documentation de référence
 
@@ -458,6 +482,6 @@ Le service n'exécute **aucun code généré par le LLM**. Le LLM retourne uniqu
 
 - **QA visuelle** : intégrer LibreOffice dans Docker pour générer des thumbnails, puis un LLM multimodal pour vérifier le rendu (boucle métier manquante)
 - **Support charts** : développer un module `pptx_charts.py` qui modifie les fichiers Excel embarqués via openpyxl
-- **Améliorer le system prompt** (`system_prompt.md`) : ajouter des exemples XML spécifiques aux templates Sia Partners
-- **Templates pré-chargés** : remplir `templates_reference.md` avec les fiches des templates Sia
+- **Améliorer le system prompt** (`system_prompt.md`) : ajouter des exemples XML spécifiques aux slides complexes du template Sia
+- **Templates** : uploader les templates nettoyés (sans slides guide) dans la collection SiaGPT et remplir les UUIDs
 - **Consulter `skill/`** : les scripts originaux contiennent des patterns avancés (images, thumbnails, PDF)
