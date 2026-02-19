@@ -762,13 +762,17 @@ async def handle_mcp_request(body: dict, session_id: str = "") -> tuple[dict, st
             "tools": [
                 {
                     "name": "generate_pptx",
-                    "description": "Génère une présentation PowerPoint à partir d'une description textuelle. Le fichier est sauvegardé dans la collection SiaGPT.",
+                    "description": "Génère une présentation PowerPoint à partir d'une description textuelle. Peut utiliser un template existant comme base (recommandé pour les présentations Sia Partners). Le fichier est sauvegardé dans la collection SiaGPT.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "prompt": {
                                 "type": "string",
                                 "description": "Description de la présentation à créer (contenu, nombre de slides, style...)",
+                            },
+                            "template_file_id": {
+                                "type": "string",
+                                "description": "UUID d'un template PPTX dans la collection SiaGPT à utiliser comme base. Si omis, crée un squelette vierge.",
                             }
                         },
                         "required": ["prompt"],
@@ -802,13 +806,22 @@ async def handle_mcp_request(body: dict, session_id: str = "") -> tuple[dict, st
 
         if tool_name == "generate_pptx":
             prompt = tool_args.get("prompt", "")
+            template_file_id = tool_args.get("template_file_id", "")
             if not prompt:
                 return mcp_jsonrpc_error(req_id, -32602, "Le paramètre 'prompt' est requis"), session_id
 
             try:
-                result = await _do_create(prompt, LLM_API_KEY)
+                # Si un template est fourni, le télécharger depuis SiaGPT Medias
+                template_bytes = None
+                template_info = ""
+                if template_file_id:
+                    template_bytes, template_name = await download_from_siagpt_medias(template_file_id, LLM_API_KEY)
+                    template_info = f"Template : {template_name} ({template_file_id})"
+
+                result = await _do_create(prompt, LLM_API_KEY, template_bytes)
+                summary = _format_mcp_summary("créée", result, template_info)
                 return mcp_jsonrpc_response(req_id, {
-                    "content": [{"type": "text", "text": _format_mcp_summary("créée", result)}]
+                    "content": [{"type": "text", "text": summary}]
                 }), session_id
             except Exception as e:
                 return mcp_jsonrpc_error(req_id, -32000, str(e)), session_id
@@ -910,7 +923,14 @@ async def generate_pptx(request: Request):
         prompt = body.get("prompt", "")
         if not prompt:
             raise HTTPException(status_code=400, detail="Le champ 'prompt' est requis")
-        return await _do_create(prompt, auth_token, output_filename=body.get("output_filename"))
+
+        # Si template_file_id fourni, télécharger le template depuis SiaGPT Medias
+        template_bytes = None
+        template_file_id = body.get("template_file_id", "")
+        if template_file_id:
+            template_bytes, _ = await download_from_siagpt_medias(template_file_id, auth_token)
+
+        return await _do_create(prompt, auth_token, template_bytes, output_filename=body.get("output_filename"))
     else:
         form = await request.form()
         prompt = form.get("prompt", "")
@@ -922,7 +942,12 @@ async def generate_pptx(request: Request):
             pptx_bytes = await file.read()
             return await _do_edit(pptx_bytes, prompt, auth_token, output_filename)
         else:
-            return await _do_create(prompt, auth_token, output_filename=output_filename)
+            # En form-data, template_file_id aussi supporté
+            template_bytes = None
+            template_file_id = form.get("template_file_id", "")
+            if template_file_id:
+                template_bytes, _ = await download_from_siagpt_medias(template_file_id, auth_token)
+            return await _do_create(prompt, auth_token, template_bytes, output_filename=output_filename)
 
 
 # ============================================================
