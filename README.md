@@ -39,8 +39,23 @@ Notre service travaille directement sur ces fichiers XML — c'est comme ça qu'
 
 Il y a deux LLM dans le système, avec des rôles distincts :
 
-- **Le Chef** = le LLM de SiaGPT (celui à qui l'utilisateur parle dans le chat). Il comprend la demande, décide d'appeler le tool `generate_pptx` ou `edit_pptx`. Il ne touche jamais au PPTX.
-- **L'Ouvrier** = le LLM appelé par ce service (via l'API `/chat/plain_llm`). Il reçoit du XML brut et des instructions techniques, et retourne du XML modifié.
+- **Le Chef** = le LLM de SiaGPT (celui à qui l'utilisateur parle dans le chat). Il comprend la demande, choisit le bon template, décide d'appeler `generate_pptx` ou `edit_pptx`. Il ne touche jamais au PPTX lui-même.
+- **L'Ouvrier** = le LLM appelé par ce service (via l'API `/chat/plain_llm`). Il reçoit du XML brut et des instructions techniques, et retourne du XML modifié. Il ne sait rien de la collection, des templates, ni de l'utilisateur.
+
+### Où sont stockés les templates Sia ?
+
+Les templates Sia Partners sont des fichiers `.pptx` stockés dans **SiaGPT Medias** (même système que les fichiers utilisateur). Chaque template a un UUID.
+
+```
+SiaGPT Medias (collection)
+├── 📄 abc-111-...  Template Sia - Proposition commerciale.pptx
+├── 📄 abc-222-...  Template Sia - Comité de pilotage.pptx
+├── 📄 abc-333-...  Template Sia - Rapport de mission.pptx
+├── 📄 xyz-444-...  ma-presentation-modifiee.pptx  (fichier utilisateur)
+└── ...
+```
+
+**C'est le Chef qui connaît les templates** (via son system prompt). Quand l'utilisateur dit "fais-moi une propale", le Chef sait qu'il faut utiliser le template "Proposition commerciale" et passe son UUID au service.
 
 ### Le workflow complet
 
@@ -49,134 +64,105 @@ Il y a deux LLM dans le système, avec des rôles distincts :
 ```mermaid
 sequenceDiagram
     participant U as 👤 Utilisateur
-    participant S as 🧠 SiaGPT (Le Chef)
-    participant P as ⚙️ PPTX Service
-    participant L as 🤖 LLM Ouvrier
-    participant M as 📦 SiaGPT Medias
+    participant S as 🧠 SiaGPT<br/>(Le Chef)
+    participant M as 📦 SiaGPT<br/>Medias
+    participant P as ⚙️ PPTX<br/>Service
+    participant L as 🤖 LLM<br/>Ouvrier
 
-    U->>S: "Ajoute 3 slides méthodologie"
-    Note over S: Comprend la demande,<br/>choisit le tool MCP
+    U->>S: "Fais-moi une propale pour Airbus"
 
-    alt Édition (edit_pptx)
-        S->>M: GET /medias/{source_file_id}/download
-        M-->>S: fichier .pptx + filename
-        S->>P: tool edit_pptx(prompt, source_file_id, auth_token)
-    else Création (generate_pptx)
-        S->>P: tool generate_pptx(prompt, auth_token)
+    Note over S: Le Chef connaît les templates.<br/>Il choisit "Proposition commerciale"<br/>UUID = abc-111-...
+
+    alt Création avec template
+        S->>P: generate_pptx(prompt, template_file_id)
+        P->>M: GET /medias/{template_file_id}/download
+        M-->>P: template.pptx
+    else Création sans template
+        S->>P: generate_pptx(prompt)
+        Note over P: Crée un squelette vierge
+    else Édition d'un fichier existant
+        S->>P: edit_pptx(prompt, source_file_id)
+        P->>M: GET /medias/{source_file_id}/download
+        M-->>P: fichier.pptx
     end
 
-    Note over P: 1. UNPACK — .pptx → dossier XML
-    Note over P: 2. INSPECT — lire structure + slides XML
+    Note over P: 1. UNPACK → XML
 
-    P->>L: POST /chat/plain_llm<br/>structure + prompt → Phase 1
-    L-->>P: Plan JSON (modify, add, remove)
+    P->>L: Structure + prompt (Phase 1)
+    L-->>P: Plan JSON
 
-    loop Pour chaque slide à modifier
-        P->>L: POST /chat/plain_llm<br/>slide XML + instructions → Phase 2
-        L-->>P: XML modifié complet
-        Note over P: Valide XML, retry si invalide (max 4x)
+    loop Chaque slide du plan
+        P->>L: XML slide + instructions (Phase 2)
+        L-->>P: XML modifié
     end
 
-    Note over P: 5. CLEAN — supprimer orphelins
-    Note over P: 6. VALIDATE — structurel + XSD
-    Note over P: 7. PACK — dossier XML → .pptx
+    Note over P: CLEAN → VALIDATE → PACK
 
-    P->>M: POST /medias/ (fichier + collection_id)
-    M-->>P: {uuid, name, url}
-    P-->>S: {status: ok, media_uuid, summary}
-    S-->>U: "Voilà ta présentation ! [lien]"
+    P->>M: POST /medias/ (pptx + collection_id)
+    M-->>P: {uuid: "xyz-999-..."}
+
+    P-->>S: {status: ok, media_uuid: "xyz-999-..."}
+    S-->>U: "Voilà ta propale ! 📎"
 ```
 
-#### Version texte détaillée (avec inputs/outputs)
+#### Tous les inputs/outputs du service
 
 ```
-ENTRÉES DU SERVICE
-──────────────────
-• prompt          : "Ajoute 3 slides sur la méthodologie" (texte libre)
-• source_file_id  : UUID du PPTX source dans SiaGPT Medias (édition uniquement)
-• auth_token      : Bearer token SiaGPT (passé par le Chef)
-• collection_id   : UUID de la collection cible (variable d'env SIAGPT_COLLECTION_ID)
+INPUTS (ce que le Chef envoie au service)
+─────────────────────────────────────────
+┌─────────────────────────────────────────────────────────────────────┐
+│  generate_pptx                                                      │
+│  ├── prompt            (requis)  "Crée une propale pour Airbus"     │
+│  └── template_file_id  (option)  "abc-111-..." UUID du template     │
+│                                  Si omis → squelette vierge         │
+├─────────────────────────────────────────────────────────────────────┤
+│  edit_pptx                                                          │
+│  ├── prompt            (requis)  "Change les couleurs en bleu"      │
+│  └── source_file_id    (requis)  "xyz-444-..." UUID du fichier      │
+└─────────────────────────────────────────────────────────────────────┘
 
-WORKFLOW INTERNE
-────────────────
-                                    ┌─── Fichier source ───┐
-                                    │  (depuis SiaGPT       │
-                                    │   Medias ou squelette) │
-                                    └──────────┬────────────┘
-                                               │
-                          ┌────────────────────▼────────────────────┐
-                          │  1. UNPACK                               │
-                          │     .pptx (ZIP) → dossier de fichiers    │
-                          │     XML pretty-printed + smart quotes    │
-                          │     escapées                             │
-                          └────────────────────┬────────────────────┘
-                                               │
-                          ┌────────────────────▼────────────────────┐
-                          │  2. INSPECT                              │
-                          │     Lire structure : slides, shapes,     │
-                          │     textes, positions, layouts           │
-                          │     → JSON de structure                  │
-                          └────────────────────┬────────────────────┘
-                                               │
-                          ┌────────────────────▼────────────────────┐
-                          │  3. PLANIFIER (LLM Ouvrier — Phase 1)   │
-                          │                                          │
-                          │     Input  : structure JSON + prompt      │
-                          │     Output : plan JSON                    │
-                          │       • slides_to_modify                  │
-                          │       • slides_to_add (duplication)       │
-                          │       • slides_to_remove                  │
-                          └────────────────────┬────────────────────┘
-                                               │
-                          ┌────────────────────▼────────────────────┐
-                          │  4. MODIFIER (LLM Ouvrier — Phase 2)    │
-                          │     Pour CHAQUE slide du plan :          │
-                          │                                          │
-                          │     Input  : XML de la slide              │
-                          │            + instructions du plan         │
-                          │     Output : XML modifié complet          │
-                          │                                          │
-                          │     ⟲ Si XML invalide → retry (max 4x)   │
-                          │     ⟲ Erreur LLM envoyée pour correction  │
-                          └────────────────────┬────────────────────┘
-                                               │
-                          ┌────────────────────▼────────────────────┐
-                          │  5. CLEAN                                │
-                          │     Supprimer slides orphelines,         │
-                          │     fichiers non-référencés,             │
-                          │     mettre à jour Content_Types          │
-                          └────────────────────┬────────────────────┘
-                                               │
-                          ┌────────────────────▼────────────────────┐
-                          │  6. VALIDATE                             │
-                          │     • 8 checks structurels               │
-                          │     • Validation XSD (vs original)       │
-                          │     • Auto-repair xml:space              │
-                          └────────────────────┬────────────────────┘
-                                               │
-                          ┌────────────────────▼────────────────────┐
-                          │  7. PACK                                 │
-                          │     Condensation XML + smart quotes      │
-                          │     restaurées → fichier .pptx           │
-                          └────────────────────┬────────────────────┘
-                                               │
-                          ┌────────────────────▼────────────────────┐
-                          │  8. UPLOAD                               │
-                          │     POST /medias/ → SiaGPT Medias        │
-                          │     avec collection_id + auth_token      │
-                          └────────────────────┬────────────────────┘
-                                               │
-SORTIE DU SERVICE                              ▼
-─────────────────
+VARIABLES D'ENVIRONNEMENT (configurées au déploiement)
+──────────────────────────────────────────────────────
+┌─────────────────────────────────────────────────────────────────────┐
+│  LLM_API_KEY           Bearer token pour appeler /chat/plain_llm    │
+│  LLM_API_URL           https://backend.siagpt.ai/chat/plain_llm    │
+│  LLM_MODEL             claude-4.5-sonnet                            │
+│  SIAGPT_MEDIAS_URL     https://backend.siagpt.ai/medias             │
+│  SIAGPT_COLLECTION_ID  UUID de la collection cible pour les uploads │
+│  MAX_RETRIES           4 (tentatives si XML invalide)               │
+└─────────────────────────────────────────────────────────────────────┘
+
+OUTPUT (ce que le service retourne au Chef)
+───────────────────────────────────────────
 {
   "status": "ok",
-  "media_uuid": "abc-123-...",     ← UUID du fichier uploadé
-  "media_name": "presentation.pptx",
-  "summary": "Ajout de 3 slides méthodologie",
-  "modified_slides": ["slide2.xml"],
-  "added_slides": ["slide6.xml", "slide7.xml", "slide8.xml"],
-  "errors": []
+  "media_uuid": "xyz-999-...",        ← UUID du fichier créé/modifié
+  "media_name": "propale_airbus.pptx",
+  "summary": "Création de 8 slides pour proposition commerciale Airbus",
+  "modified_slides": ["slide1.xml", "slide2.xml", ...],
+  "added_slides": ["slide6.xml", "slide7.xml"],
+  "removed_slides": ["slide5.xml"],
+  "errors": []                        ← vide si tout va bien
 }
+```
+
+#### Le parcours du fichier PPTX (étape par étape)
+
+```mermaid
+graph TD
+    A[📦 SiaGPT Medias<br/>template.pptx] -->|"GET /medias/{uuid}/download"| B["1️⃣ UNPACK<br/>ZIP → dossier XML<br/>+ pretty-print<br/>+ escape smart quotes"]
+    B --> C["2️⃣ INSPECT<br/>Lire structure :<br/>slides, shapes, textes,<br/>positions, layouts"]
+    C --> D["3️⃣ PLANIFIER<br/>🤖 LLM Ouvrier Phase 1<br/><br/>Input : structure JSON + prompt<br/>Output : plan JSON"]
+    D --> E["4️⃣ MODIFIER<br/>🤖 LLM Ouvrier Phase 2<br/><br/>Pour chaque slide :<br/>Input : XML + instructions<br/>Output : XML modifié<br/>⟲ Retry si invalide (max 4x)"]
+    E --> F["5️⃣ CLEAN<br/>Supprimer orphelins<br/>MAJ Content_Types"]
+    F --> G["6️⃣ VALIDATE<br/>8 checks structurels<br/>+ validation XSD<br/>+ auto-repair"]
+    G --> H["7️⃣ PACK<br/>Condenser XML<br/>Restaurer smart quotes<br/>→ fichier .pptx"]
+    H -->|"POST /medias/<br/>+ collection_id"| I["📦 SiaGPT Medias<br/>résultat.pptx<br/>UUID = xyz-999-..."]
+
+    style A fill:#4a90d9,color:#fff
+    style I fill:#27ae60,color:#fff
+    style D fill:#f39c12,color:#fff
+    style E fill:#f39c12,color:#fff
 ```
 
 ---
@@ -341,11 +327,17 @@ Contient le **skill PPTX original d'Anthropic** (celui que Claude utilise dans C
 | `/health` | GET | Health check |
 
 ```bash
-# Création
-curl -X POST http://localhost:8000/api/create \
-  -F "prompt=Crée 5 slides sur l'IA en entreprise"
+# Création sans template (squelette vierge)
+curl -X POST http://localhost:8000/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Crée 5 slides sur l'\''IA en entreprise"}'
 
-# Édition
+# Création avec template Sia Partners
+curl -X POST http://localhost:8000/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Propale pour Airbus", "template_file_id": "abc-111-..."}'
+
+# Édition d'un fichier existant (upload direct)
 curl -X POST http://localhost:8000/api/edit \
   -F "prompt=Change tous les titres en bleu" \
   -F "file=@presentation.pptx"
@@ -355,8 +347,10 @@ curl -X POST http://localhost:8000/api/edit \
 
 | Tool | Paramètres | Description |
 |------|-----------|-------------|
-| `generate_pptx` | `prompt` | Crée un PPTX, l'uploade dans SiaGPT |
-| `edit_pptx` | `prompt`, `source_file_id` | Télécharge, modifie, uploade |
+| `generate_pptx` | `prompt`, `template_file_id`* | Crée un PPTX (depuis template ou squelette vierge), l'uploade |
+| `edit_pptx` | `prompt`, `source_file_id` | Télécharge un PPTX existant, le modifie, l'uploade |
+
+\* `template_file_id` est optionnel. Si fourni, le service télécharge le template depuis SiaGPT Medias et l'utilise comme base. Si omis, crée un squelette vierge (5 slides blanches).
 
 **URL MCP** : `http://ADRESSE:8000/mcp/sse` (Streamable HTTP/SSE)
 
