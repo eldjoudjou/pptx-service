@@ -447,14 +447,33 @@ cp .env.example .env
 # Remplir LLM_API_KEY et SIAGPT_COLLECTION_ID
 ```
 
-### 2. Docker
+### 2. Déploiement direct (VPS / dev)
+
+```bash
+pip3 install -r requirements.txt
+export $(cat .env | xargs)
+python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+Pour que ça tourne en arrière-plan :
+```bash
+nohup python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 &
+```
+
+Note : les chemins par défaut `SYSTEM_PROMPT_PATH` et `STYLE_CONFIG_PATH` pointent vers `/app/` (Docker). En déploiement direct, ajouter dans `.env` :
+```
+SYSTEM_PROMPT_PATH=./system_prompt.md
+STYLE_CONFIG_PATH=./sia_theme.md
+```
+
+### 3. Docker
 
 ```bash
 docker build -t pptx-service .
 docker run -d -p 8000:8000 --env-file .env pptx-service
 ```
 
-### 3. Vérification
+### 4. Vérification
 
 ```bash
 curl http://localhost:8000/health
