@@ -315,6 +315,7 @@ pptx-service/
 ├── schemas/               ← Schemas XSD Office Open XML (dans Docker)
 ├── system_prompt.md       ← Instructions pour le LLM Ouvrier (modif XML)
 ├── system_prompt_chef.md  ← Instructions pour le LLM Chef (SiaGPT, choix des tools)
+├── templates_reference.md ← Fiches techniques des templates Sia (pour le Chef)
 ├── skill/                 ← Documentation de référence (PAS dans Docker)
 ├── Dockerfile
 ├── requirements.txt
@@ -445,16 +446,18 @@ Le service n'exécute **aucun code généré par le LLM**. Le LLM retourne uniqu
 
 ## Limitations connues
 
-- **Pas de QA visuelle** : pas de vérification du rendu (nécessiterait LibreOffice)
-- **Pas de gestion d'images** : le LLM ne peut pas ajouter/modifier des images
-- **Pas de graphiques/charts** : les graphiques Excel embarqués ne sont pas modifiables
+- **Pas de QA visuelle** : le service valide la structure XML mais ne peut pas vérifier le rendu. Des débordements de texte, des mises en page cassées sont possibles si le contenu est très différent du placeholder original. Nécessiterait LibreOffice dans Docker + un LLM multimodal.
+- **Pas de gestion d'images** : le LLM ne peut pas ajouter, remplacer ou modifier des images. Les images existantes (logos, photos) sont préservées intactes.
+- **Charts non modifiables** : les graphiques dans un PPTX sont des fichiers Excel embarqués (`ppt/embeddings/*.xlsx`). Le service ne peut pas modifier leurs données, en créer de nouveaux, ni changer leur type. Il peut uniquement modifier le texte autour des charts.
 - **Dépendance au modèle** : Claude Sonnet 4.5 donne de bons résultats, les modèles moins capables font plus d'erreurs XML
+- **Pas de boucle métier** : après modification, le service ne vérifie pas si le résultat "a du sens" visuellement (texte tronqué, slide vide, incohérences). Seule la validation technique (XML/XSD) est faite.
 
 ---
 
 ## Pour aller plus loin
 
-- **Améliorer le system prompt** (`system_prompt.md`) : ajouter des exemples XML spécifiques aux templates Sia
-- **QA visuelle** : si `/plain_llm` supporte les images, intégrer LibreOffice + validation visuelle
-- **Templates pré-chargés** : bibliothèque de templates Sia Partners
+- **QA visuelle** : intégrer LibreOffice dans Docker pour générer des thumbnails, puis un LLM multimodal pour vérifier le rendu (boucle métier manquante)
+- **Support charts** : développer un module `pptx_charts.py` qui modifie les fichiers Excel embarqués via openpyxl
+- **Améliorer le system prompt** (`system_prompt.md`) : ajouter des exemples XML spécifiques aux templates Sia Partners
+- **Templates pré-chargés** : remplir `templates_reference.md` avec les fiches des templates Sia
 - **Consulter `skill/`** : les scripts originaux contiennent des patterns avancés (images, thumbnails, PDF)
