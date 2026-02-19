@@ -109,6 +109,8 @@ presentation.pptx (= ZIP)
 - **Couleur texte** : `<a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>` dans `<a:rPr>`
 - **Alignement** : `algn="l"` (left), `algn="ctr"` (center), `algn="r"` (right) sur `<a:pPr>`
 - **Bullets** : `<a:buChar char="•"/>` ou `<a:buAutoNum/>` — JAMAIS le caractère "•" directement dans `<a:t>`
+- **Héritage bullets** : laisse les bullets hériter du layout. Ne spécifie que `<a:buChar>` ou `<a:buNone>`, ne recrée pas tout le formatage.
+- **Line spacing** : copie le `<a:lnSpc>` des paragraphes existants. Exemple : `<a:lnSpc><a:spcPts val="3919"/></a:lnSpc>` (= 39.19pt)
 - **Smart quotes** : utiliser les entités XML `&#x201C;` `&#x201D;` `&#x2018;` `&#x2019;`
 - **Whitespace** : `xml:space="preserve"` sur `<a:t>` si espaces en début/fin
 
@@ -122,16 +124,16 @@ presentation.pptx (= ZIP)
 ✅ CORRECT :
 ```xml
 <a:p>
-  <a:pPr algn="l"/>
+  <a:pPr algn="l"><a:lnSpc><a:spcPts val="3919"/></a:lnSpc></a:pPr>
   <a:r><a:rPr lang="fr-FR" sz="1800" b="1"/><a:t>Item 1</a:t></a:r>
 </a:p>
 <a:p>
-  <a:pPr algn="l"/>
+  <a:pPr algn="l"><a:lnSpc><a:spcPts val="3919"/></a:lnSpc></a:pPr>
   <a:r><a:rPr lang="fr-FR" sz="1600"/><a:t>Description de l'item 1</a:t></a:r>
 </a:p>
 ```
 
-Copier les `<a:pPr>` du paragraphe original pour préserver l'espacement.
+Copier les `<a:pPr>` du paragraphe original (y compris `<a:lnSpc>`) pour préserver l'espacement.
 
 ### Bonnes pratiques
 
@@ -151,9 +153,27 @@ Copier les `<a:pPr>` du paragraphe original pour préserver l'espacement.
 
 ### Adaptation de templates — Pièges courants
 
-Quand le contenu source a **moins d'items** que le template :
-- **Supprime les éléments entiers** (images, shapes, text boxes) — ne te contente pas de vider le texte
+**⚠️ UTILISE DES LAYOUTS VARIÉS** — les présentations monotones sont l'erreur la plus fréquente.
+Ne te contente PAS de répéter le même layout titre + bullets sur chaque slide.
+Cherche activement dans le template :
+- Layouts multi-colonnes (2, 3 colonnes)
+- Image + texte
+- Citations / callouts
+- Séparateurs de section
+- Chiffres-clés / stats
+- Grilles d'icônes
+
+Adapte le type de contenu au style de layout (ex : chiffres-clés → layout stat, témoignage → layout citation).
+
+**Template slots ≠ Items source** :
+
+Si le template a 4 membres d'équipe mais la source en a 3 :
+- ❌ Ne PAS juste vider le texte du 4ème
+- ✅ Supprimer le GROUPE ENTIER du 4ème (image + text boxes + shapes associées)
 - Un shape vide mais visible crée un "trou" dans la slide
+
+Quand le contenu source a **moins d'items** que le template :
+- Supprime les éléments entiers (images, shapes, text boxes)
 - Vérifie les visuels orphelins après suppression de texte
 
 Quand le contenu source a **plus d'items** que le template :
