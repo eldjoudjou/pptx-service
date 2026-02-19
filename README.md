@@ -44,50 +44,139 @@ Il y a deux LLM dans le système, avec des rôles distincts :
 
 ### Le workflow complet
 
+#### Diagramme visuel (rendu par GitHub)
+
+```mermaid
+sequenceDiagram
+    participant U as 👤 Utilisateur
+    participant S as 🧠 SiaGPT (Le Chef)
+    participant P as ⚙️ PPTX Service
+    participant L as 🤖 LLM Ouvrier
+    participant M as 📦 SiaGPT Medias
+
+    U->>S: "Ajoute 3 slides méthodologie"
+    Note over S: Comprend la demande,<br/>choisit le tool MCP
+
+    alt Édition (edit_pptx)
+        S->>M: GET /medias/{source_file_id}/download
+        M-->>S: fichier .pptx + filename
+        S->>P: tool edit_pptx(prompt, source_file_id, auth_token)
+    else Création (generate_pptx)
+        S->>P: tool generate_pptx(prompt, auth_token)
+    end
+
+    Note over P: 1. UNPACK — .pptx → dossier XML
+    Note over P: 2. INSPECT — lire structure + slides XML
+
+    P->>L: POST /chat/plain_llm<br/>structure + prompt → Phase 1
+    L-->>P: Plan JSON (modify, add, remove)
+
+    loop Pour chaque slide à modifier
+        P->>L: POST /chat/plain_llm<br/>slide XML + instructions → Phase 2
+        L-->>P: XML modifié complet
+        Note over P: Valide XML, retry si invalide (max 4x)
+    end
+
+    Note over P: 5. CLEAN — supprimer orphelins
+    Note over P: 6. VALIDATE — structurel + XSD
+    Note over P: 7. PACK — dossier XML → .pptx
+
+    P->>M: POST /medias/ (fichier + collection_id)
+    M-->>P: {uuid, name, url}
+    P-->>S: {status: ok, media_uuid, summary}
+    S-->>U: "Voilà ta présentation ! [lien]"
 ```
- UTILISATEUR                              SIAGPT (Le Chef)                         PPTX SERVICE (ce repo)
- ───────────                              ────────────────                         ──────────────────────
- "Ajoute 3 slides                                │
-  sur la méthodologie"  ──────────────►   Comprend la demande
-                                          Appelle le tool MCP
-                                          generate_pptx / edit_pptx  ──────────►  ┌─────────────────────────┐
-                                                                                  │                         │
-                                                                                  │  1. UNPACK               │
-                                                                                  │     .pptx → dossier XML  │
-                                                                                  │                         │
-                                                                                  │  2. INSPECT              │
-                                                                                  │     Lire la structure    │
-                                                                                  │                         │
-                                                                                  │  3. PLANIFIER            │
-                                                                                  │     Envoyer structure    │
-                                                                                  │     + demande à          │
-                                                                                  │     l'Ouvrier LLM        │
-                                                                                  │     → Plan JSON          │
-                                                                                  │                         │
-                                                                                  │  4. MODIFIER             │
-                                                                                  │     Pour chaque slide :  │
-                                                                                  │     envoyer XML +        │
-                                                                                  │     instructions à       │
-                                                                                  │     l'Ouvrier            │
-                                                                                  │     → XML modifié        │
-                                                                                  │                         │
-                                                                                  │  5. CLEAN                │
-                                                                                  │     Supprimer orphelins  │
-                                                                                  │                         │
-                                                                                  │  6. VALIDATE             │
-                                                                                  │     Checks structurels   │
-                                                                                  │     + Validation XSD     │
-                                                                                  │                         │
-                                                                                  │  7. PACK                 │
-                                                                                  │     Dossier XML → .pptx  │
-                                                                                  │                         │
-                                                                                  │  8. UPLOAD               │
-                                                                                  │     → SiaGPT Medias      │
-                                                                                  └────────────┬────────────┘
-                                                                                               │
-                                          Reçoit l'UUID du fichier  ◄──────────────────────────┘
- Voit le fichier dans                     Affiche le résultat
- la collection SiaGPT  ◄─────────────    dans le chat
+
+#### Version texte détaillée (avec inputs/outputs)
+
+```
+ENTRÉES DU SERVICE
+──────────────────
+• prompt          : "Ajoute 3 slides sur la méthodologie" (texte libre)
+• source_file_id  : UUID du PPTX source dans SiaGPT Medias (édition uniquement)
+• auth_token      : Bearer token SiaGPT (passé par le Chef)
+• collection_id   : UUID de la collection cible (variable d'env SIAGPT_COLLECTION_ID)
+
+WORKFLOW INTERNE
+────────────────
+                                    ┌─── Fichier source ───┐
+                                    │  (depuis SiaGPT       │
+                                    │   Medias ou squelette) │
+                                    └──────────┬────────────┘
+                                               │
+                          ┌────────────────────▼────────────────────┐
+                          │  1. UNPACK                               │
+                          │     .pptx (ZIP) → dossier de fichiers    │
+                          │     XML pretty-printed + smart quotes    │
+                          │     escapées                             │
+                          └────────────────────┬────────────────────┘
+                                               │
+                          ┌────────────────────▼────────────────────┐
+                          │  2. INSPECT                              │
+                          │     Lire structure : slides, shapes,     │
+                          │     textes, positions, layouts           │
+                          │     → JSON de structure                  │
+                          └────────────────────┬────────────────────┘
+                                               │
+                          ┌────────────────────▼────────────────────┐
+                          │  3. PLANIFIER (LLM Ouvrier — Phase 1)   │
+                          │                                          │
+                          │     Input  : structure JSON + prompt      │
+                          │     Output : plan JSON                    │
+                          │       • slides_to_modify                  │
+                          │       • slides_to_add (duplication)       │
+                          │       • slides_to_remove                  │
+                          └────────────────────┬────────────────────┘
+                                               │
+                          ┌────────────────────▼────────────────────┐
+                          │  4. MODIFIER (LLM Ouvrier — Phase 2)    │
+                          │     Pour CHAQUE slide du plan :          │
+                          │                                          │
+                          │     Input  : XML de la slide              │
+                          │            + instructions du plan         │
+                          │     Output : XML modifié complet          │
+                          │                                          │
+                          │     ⟲ Si XML invalide → retry (max 4x)   │
+                          │     ⟲ Erreur LLM envoyée pour correction  │
+                          └────────────────────┬────────────────────┘
+                                               │
+                          ┌────────────────────▼────────────────────┐
+                          │  5. CLEAN                                │
+                          │     Supprimer slides orphelines,         │
+                          │     fichiers non-référencés,             │
+                          │     mettre à jour Content_Types          │
+                          └────────────────────┬────────────────────┘
+                                               │
+                          ┌────────────────────▼────────────────────┐
+                          │  6. VALIDATE                             │
+                          │     • 8 checks structurels               │
+                          │     • Validation XSD (vs original)       │
+                          │     • Auto-repair xml:space              │
+                          └────────────────────┬────────────────────┘
+                                               │
+                          ┌────────────────────▼────────────────────┐
+                          │  7. PACK                                 │
+                          │     Condensation XML + smart quotes      │
+                          │     restaurées → fichier .pptx           │
+                          └────────────────────┬────────────────────┘
+                                               │
+                          ┌────────────────────▼────────────────────┐
+                          │  8. UPLOAD                               │
+                          │     POST /medias/ → SiaGPT Medias        │
+                          │     avec collection_id + auth_token      │
+                          └────────────────────┬────────────────────┘
+                                               │
+SORTIE DU SERVICE                              ▼
+─────────────────
+{
+  "status": "ok",
+  "media_uuid": "abc-123-...",     ← UUID du fichier uploadé
+  "media_name": "presentation.pptx",
+  "summary": "Ajout de 3 slides méthodologie",
+  "modified_slides": ["slide2.xml"],
+  "added_slides": ["slide6.xml", "slide7.xml", "slide8.xml"],
+  "errors": []
+}
 ```
 
 ---
