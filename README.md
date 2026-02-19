@@ -165,6 +165,45 @@ graph TD
     style E fill:#f39c12,color:#fff
 ```
 
+#### Qui exécute quoi dans le pipeline ?
+
+Le LLM n'intervient que dans **2 étapes sur 8**. Tout le reste est du code Python déterministe (pas d'IA).
+
+| Étape | Exécuté par | Comment | Peut échouer ? |
+|-------|-------------|---------|----------------|
+| 1. UNPACK | 🐍 Python | `zipfile.extractall()` + pretty-print XML | Non (c'est un unzip) |
+| 2. INSPECT | 🐍 Python | `python-pptx` lit shapes, textes, positions → JSON | Non (lecture seule) |
+| **3. PLANIFIER** | **🤖 LLM Ouvrier** | **POST /chat/plain_llm — reçoit JSON, retourne JSON** | **Oui → retry max 4x** |
+| **4. MODIFIER** | **🤖 LLM Ouvrier** | **POST /chat/plain_llm — reçoit XML, retourne XML** | **Oui → retry max 4x** |
+| 5. CLEAN | 🐍 Python | Parcourt les fichiers, supprime orphelins | Non (opérations fichiers) |
+| 6. VALIDATE | 🐍 Python | lxml parse + XSD validation | Non (vérification mécanique) |
+| 7. PACK | 🐍 Python | `zipfile.write()` avec compression | Non (c'est un zip) |
+| 8. UPLOAD | 🐍 Python | `httpx POST` vers SiaGPT Medias | Oui (réseau) |
+
+**Pourquoi la validation ne peut pas se tromper** : les fichiers `.xsd` sont le dictionnaire officiel du format PowerPoint (norme ISO/IEC 29500). `lxml` vérifie chaque élément XML contre ce dictionnaire — si le LLM invente un tag `<p:monTrucInventé>`, la validation le détecte mécaniquement. C'est comme un correcteur orthographique : pas besoin d'intelligence, juste de comparer avec le dictionnaire.
+
+**Pourquoi les checks structurels ne peuvent pas se tromper** : ce sont des vérifications factuelles. "Ce `.rels` pointe vers `slide5.xml` — est-ce que ce fichier existe ?" → `os.path.exists()`. "Y a-t-il deux shapes avec le même ID ?" → comparer des nombres. Pas d'interprétation, pas d'ambiguïté.
+
+Le flux dans le code (`main.py`) :
+
+```python
+async def _do_edit(pptx_bytes, prompt, auth_token):
+    # --- Code Python pur ---
+    structure = inspect_pptx_structure(pptx_bytes)      # 2. INSPECT
+    unpacked_dir = unpack_pptx(pptx_bytes, tmp_dir)     # 1. UNPACK
+
+    # --- Appels LLM (les 2 seules étapes "intelligentes") ---
+    plan = await plan_modifications(structure, prompt)    # 3. PLANIFIER (🤖 LLM)
+    for slide in plan["slides_to_modify"]:
+        new_xml = await modify_slide_xml(xml, instr.)     # 4. MODIFIER  (🤖 LLM)
+
+    # --- Code Python pur ---
+    pptx_tools.clean(unpacked_dir)                        # 5. CLEAN
+    pptx_validate.validate_pptx(unpacked_dir, original)   # 6. VALIDATE
+    result = pptx_tools.pack(unpacked_dir, original)      # 7. PACK
+    await save_to_siagpt_medias(result, filename, token)  # 8. UPLOAD
+```
+
 ---
 
 ## Les outils PPTX en détail
