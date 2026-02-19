@@ -44,18 +44,16 @@ Il y a deux LLM dans le système, avec des rôles distincts :
 
 ### Où sont stockés les templates Sia ?
 
-Les templates Sia Partners sont des fichiers `.pptx` stockés dans **SiaGPT Medias** (même système que les fichiers utilisateur). Chaque template a un UUID.
+Les templates Sia Partners sont des fichiers `.pptx` stockés dans **SiaGPT Medias** (même système que les fichiers utilisateur). Chaque fichier a un UUID.
 
 ```
 SiaGPT Medias (collection)
-├── 📄 abc-111-...  Template Sia - Proposition commerciale.pptx
-├── 📄 abc-222-...  Template Sia - Comité de pilotage.pptx
-├── 📄 abc-333-...  Template Sia - Rapport de mission.pptx
-├── 📄 xyz-444-...  ma-presentation-modifiee.pptx  (fichier utilisateur)
+├── 📄 xxx-xxx-...  Template Master Sia.pptx          (le modèle avec ~80 layouts)
+├── 📄 yyy-yyy-...  ma-presentation-modifiee.pptx      (fichier utilisateur)
 └── ...
 ```
 
-**C'est le Chef qui connaît les templates** (via son system prompt). Quand l'utilisateur dit "fais-moi une propale", le Chef sait qu'il faut utiliser le template "Proposition commerciale" et passe son UUID au service.
+Pour l'instant on a un seul template (le Master Sia qui contient tous les layouts : covers, agenda, dividers, contenu, bio, CV, data, process, closing). Le Chef connaît son UUID via son system prompt et le passe au service quand l'utilisateur veut créer une présentation.
 
 ### Modèle vs Charte graphique — séparation architecturale
 
@@ -91,18 +89,18 @@ sequenceDiagram
 
     U->>S: "Fais-moi une propale pour Airbus"
 
-    Note over S: Le Chef connaît les templates.<br/>Il choisit "Proposition commerciale"<br/>UUID = abc-111-...
+    Note over S: Le Chef connaît le Template Master Sia.<br/>Il passe son UUID au service.
 
     alt Création avec template
         S->>P: generate_pptx(prompt, template_file_id)
-        P->>M: GET /medias/{template_file_id}/download
+        P->>M: GET /medias/{file_id}/download
         M-->>P: template.pptx
     else Création sans template
         S->>P: generate_pptx(prompt)
         Note over P: Crée un squelette vierge
     else Édition d'un fichier existant
         S->>P: edit_pptx(prompt, source_file_id)
-        P->>M: GET /medias/{source_file_id}/download
+        P->>M: GET /medias/{file_id}/download
         M-->>P: fichier.pptx
     end
 
@@ -119,9 +117,9 @@ sequenceDiagram
     Note over P: CLEAN → VALIDATE → PACK
 
     P->>M: POST /medias/ (pptx + collection_id)
-    M-->>P: {uuid: "xyz-999-..."}
+    M-->>P: {uuid: "zzz-zzz-..."}
 
-    P-->>S: {status: ok, media_uuid: "xyz-999-..."}
+    P-->>S: {status: ok, media_uuid: "zzz-zzz-..."}
     S-->>U: "Voilà ta propale ! 📎"
 ```
 
@@ -133,12 +131,12 @@ INPUTS (ce que le Chef envoie au service)
 ┌─────────────────────────────────────────────────────────────────────┐
 │  generate_pptx                                                      │
 │  ├── prompt            (requis)  "Crée une propale pour Airbus"     │
-│  └── template_file_id  (option)  "abc-111-..." UUID du template     │
+│  └── template_file_id  (option)  UUID du Template Master Sia        │
 │                                  Si omis → squelette vierge         │
 ├─────────────────────────────────────────────────────────────────────┤
 │  edit_pptx                                                          │
 │  ├── prompt            (requis)  "Change les couleurs en bleu"      │
-│  └── source_file_id    (requis)  "xyz-444-..." UUID du fichier      │
+│  └── source_file_id    (requis)  UUID du fichier à modifier         │
 └─────────────────────────────────────────────────────────────────────┘
 
 VARIABLES D'ENVIRONNEMENT (configurées au déploiement)
@@ -156,13 +154,13 @@ OUTPUT (ce que le service retourne au Chef)
 ───────────────────────────────────────────
 {
   "status": "ok",
-  "media_uuid": "xyz-999-...",        ← UUID du fichier créé/modifié
+  "media_uuid": "...",                   ← UUID du fichier créé/modifié dans la collection
   "media_name": "propale_airbus.pptx",
   "summary": "Création de 8 slides pour proposition commerciale Airbus",
   "modified_slides": ["slide1.xml", "slide2.xml", ...],
   "added_slides": ["slide6.xml", "slide7.xml"],
   "removed_slides": ["slide5.xml"],
-  "errors": []                        ← vide si tout va bien
+  "errors": []                           ← vide si tout va bien
 }
 ```
 
@@ -177,7 +175,7 @@ graph TD
     E --> F["5️⃣ CLEAN<br/>Supprimer orphelins<br/>MAJ Content_Types"]
     F --> G["6️⃣ VALIDATE<br/>8 checks structurels<br/>+ validation XSD<br/>+ auto-repair"]
     G --> H["7️⃣ PACK<br/>Condenser XML<br/>Restaurer smart quotes<br/>→ fichier .pptx"]
-    H -->|"POST /medias/<br/>+ collection_id"| I["📦 SiaGPT Medias<br/>résultat.pptx<br/>UUID = xyz-999-..."]
+    H -->|"POST /medias/<br/>+ collection_id"| I["📦 SiaGPT Medias<br/>résultat.pptx"]
 
     style A fill:#4a90d9,color:#fff
     style I fill:#27ae60,color:#fff
@@ -334,17 +332,16 @@ pptx-service/
 ├── pptx_validate.py       ← Validation : structurelle + XSD
 ├── schemas/               ← Schemas XSD Office Open XML (dans Docker)
 ├── system_prompt.md       ← Instructions pour le LLM Ouvrier (modif XML, règles génériques)
-├── sia_theme.md          ← Charte graphique Sia Partners 2024 (couleurs, police, layouts) — interchangeable
+├── sia_theme.md           ← Charte graphique Sia Partners 2024 (couleurs, police, layouts) — interchangeable
 ├── system_prompt_chef.md  ← Instructions pour le LLM Chef (SiaGPT, choix des tools)
 ├── skill/                 ← Documentation de référence (PAS dans Docker)
 ├── Dockerfile
 ├── requirements.txt
-├── rebuild.sh             ← Script dev : rebuild Docker + relance
 ├── .env.example
 └── .gitignore
 ```
 
-### main.py (~960 lignes)
+### main.py (~1000 lignes)
 
 Le cœur du service. Contient :
 - **Endpoints REST** : `/api/edit`, `/api/create`, `/api/generate`, `/api/inspect`
@@ -356,7 +353,7 @@ Le cœur du service. Contient :
 
 Manipulation PPTX pure. Zéro logique métier, zéro validation. Détaillé ci-dessus.
 
-### pptx_validate.py (~680 lignes)
+### pptx_validate.py (~740 lignes)
 
 Validation complète en deux niveaux. Détaillé ci-dessus.
 
@@ -414,10 +411,10 @@ curl -X POST http://localhost:8000/api/generate \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Crée 5 slides sur l'\''IA en entreprise"}'
 
-# Création avec template Sia Partners
+# Création avec le Template Master Sia
 curl -X POST http://localhost:8000/api/generate \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "Propale pour Airbus", "template_file_id": "abc-111-..."}'
+  -d '{"prompt": "Propale pour Airbus", "template_file_id": "UUID-DU-TEMPLATE"}'
 
 # Édition d'un fichier existant (upload direct)
 curl -X POST http://localhost:8000/api/edit \
@@ -498,5 +495,5 @@ Le service n'exécute **aucun code généré par le LLM**. Le LLM retourne uniqu
 - **QA visuelle** : intégrer LibreOffice dans Docker pour générer des thumbnails, puis un LLM multimodal pour vérifier le rendu (boucle métier manquante)
 - **Support charts** : développer un module `pptx_charts.py` qui modifie les fichiers Excel embarqués via openpyxl
 - **Améliorer le system prompt** (`system_prompt.md`) : ajouter des exemples XML spécifiques aux slides complexes du template Sia
-- **Templates** : uploader les templates nettoyés (sans slides guide) dans la collection SiaGPT et remplir les UUIDs
+- **Templates spécialisés** : créer des templates dédiés (propale, COPIL, rapport) dérivés du Master, pour des résultats plus ciblés
 - **Consulter `skill/`** : les scripts originaux contiennent des patterns avancés (images, thumbnails, PDF)
