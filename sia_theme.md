@@ -1,7 +1,8 @@
-# Config Sia Partners 2024
+# Charte graphique — Sia Partners 2024
 
-Ce fichier est inclus dans le system prompt de l'Ouvrier LLM.
-Pour changer de charte graphique, remplacer ce fichier.
+Ce fichier est la **charte graphique** (*brand guidelines*) du LLM Ouvrier.
+Il est chargé automatiquement au démarrage et injecté dans le system prompt.
+Pour changer de charte : remplacer ce fichier ou pointer `STYLE_CONFIG_PATH` vers un autre.
 
 ---
 

@@ -57,25 +57,25 @@ SiaGPT Medias (collection)
 
 **C'est le Chef qui connaît les templates** (via son system prompt). Quand l'utilisateur dit "fais-moi une propale", le Chef sait qu'il faut utiliser le template "Proposition commerciale" et passe son UUID au service.
 
-### Template vs Config — séparation architecturale
+### Modèle vs Charte graphique — séparation architecturale
 
 Un template Sia contient souvent des slides "guide de style" (palette de couleurs, règles d'utilisation, instructions). Ces slides sont de la **documentation pour humains**, pas des layouts de contenu.
 
 On sépare les deux :
 
 ```
-TEMPLATE .pptx (= architecture)         CONFIG dans system_prompt.md (= style)
-──────────────────────────────           ──────────────────────────────────────
+MODÈLE .pptx (= master template)        CHARTE GRAPHIQUE sia_theme.md (= brand guidelines)
+─────────────────────────────            ─────────────────────────────────────────────────
 Les layouts de contenu                   La palette Sia 2024 (couleurs par ref thème)
 Les positions des shapes                 La police Sora-SIA
 Les placeholders                         Les règles d'utilisation des couleurs
-La structure                             Les tailles de texte
+La structure                             Les design tokens (tailles, marges)
 = ce que le LLM MODIFIE                 = ce que le LLM RESPECTE sans y toucher
 ```
 
-Les slides guide (couleurs, "how to use", "delete before use") doivent être **supprimées** du template avant de l'uploader dans la collection. La config est extraite dans le system prompt de l'Ouvrier.
+Les slides guide (couleurs, "how to use", "delete before use") doivent être **supprimées** du modèle avant de l'uploader dans la collection. La charte graphique est extraite dans `sia_theme.md`, chargée par le service au démarrage et injectée dans le system prompt de l'Ouvrier.
 
-Le LLM Ouvrier n'a pas besoin de "fiches techniques" des templates — il les analyse lui-même à l'étape INSPECT. Il a juste besoin de connaître les règles de style (config) pour produire un résultat cohérent avec la charte Sia.
+Le LLM Ouvrier n'a pas besoin de "fiches techniques" des templates — il les analyse lui-même à l'étape INSPECT. Il a juste besoin de la charte graphique pour produire un résultat conforme.
 
 ### Le workflow complet
 
@@ -334,7 +334,7 @@ pptx-service/
 ├── pptx_validate.py       ← Validation : structurelle + XSD
 ├── schemas/               ← Schemas XSD Office Open XML (dans Docker)
 ├── system_prompt.md       ← Instructions pour le LLM Ouvrier (modif XML, règles génériques)
-├── sia_config.md          ← Config style Sia Partners 2024 (couleurs, police, layouts) — interchangeable
+├── sia_theme.md          ← Charte graphique Sia Partners 2024 (couleurs, police, layouts) — interchangeable
 ├── system_prompt_chef.md  ← Instructions pour le LLM Chef (SiaGPT, choix des tools)
 ├── skill/                 ← Documentation de référence (PAS dans Docker)
 ├── Dockerfile
@@ -370,18 +370,18 @@ Le "cahier des charges" du LLM Ouvrier. Contient :
 - Les 2 phases (planification JSON + modification XML)
 - Le format XML PowerPoint et les bonnes pratiques
 - Les règles génériques (layouts variés, bullets, whitespace, smart quotes)
-- Une référence vers `sia_config.md` pour la charte graphique
+- Une référence vers `sia_theme.md` pour la charte graphique
 
 Ce fichier est **générique** — il ne contient pas de config spécifique à un client.
 
-### sia_config.md (~100 lignes)
+### sia_theme.md (~100 lignes)
 
-La charte graphique, **séparée et interchangeable**. Contient :
+La **charte graphique** (*brand guidelines*), séparée et interchangeable. Contient :
 - Palette "Sia 2024 01" (10 couleurs avec noms, hex, refs thème, règles d'usage)
 - Référence MS Office Palette (theme colors customisés, charts auto-populate)
 - Police Sora-SIA
 - Catalogue des ~80 layouts par catégorie
-- Principes de design (tailles, marges)
+- Design tokens (tailles, marges)
 
 Pour changer de client ou de charte : remplacer ce fichier. Configurable via `STYLE_CONFIG_PATH`.
 
@@ -472,7 +472,7 @@ curl http://localhost:8000/health
 | `LLM_MODEL` | Non | `claude-4.5-sonnet` | Modèle LLM |
 | `SIAGPT_MEDIAS_URL` | Non | `https://backend.siagpt.ai/medias` | URL API Medias |
 | `SYSTEM_PROMPT_PATH` | Non | `/app/system_prompt.md` | Chemin du system prompt (règles génériques) |
-| `STYLE_CONFIG_PATH` | Non | `/app/sia_config.md` | Chemin de la config style (couleurs, polices, layouts) — interchangeable |
+| `STYLE_CONFIG_PATH` | Non | `/app/sia_theme.md` | Chemin de la charte graphique (couleurs, polices, layouts) — interchangeable |
 | `MAX_RETRIES` | Non | `4` | Tentatives si XML invalide |
 
 ---

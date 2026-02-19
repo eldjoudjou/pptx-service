@@ -64,7 +64,7 @@ SIAGPT_MEDIAS_URL = os.environ.get("SIAGPT_MEDIAS_URL", "https://backend.siagpt.
 SIAGPT_COLLECTION_ID = os.environ.get("SIAGPT_COLLECTION_ID", "")  # UUID de la collection cible
 
 SYSTEM_PROMPT_PATH = os.environ.get("SYSTEM_PROMPT_PATH", "/app/system_prompt.md")
-STYLE_CONFIG_PATH = os.environ.get("STYLE_CONFIG_PATH", "/app/sia_config.md")
+STYLE_CONFIG_PATH = os.environ.get("STYLE_CONFIG_PATH", "/app/sia_theme.md")
 
 # Retry
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "4"))

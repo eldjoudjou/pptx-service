@@ -15,7 +15,7 @@ COPY main.py .
 COPY pptx_tools.py .
 COPY pptx_validate.py .
 COPY system_prompt.md .
-COPY sia_config.md .
+COPY sia_theme.md .
 
 # Schemas XSD Office (pour validation PPTX)
 COPY schemas/ ./schemas/

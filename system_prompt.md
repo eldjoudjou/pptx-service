@@ -201,7 +201,7 @@ Quand tu ajoutes du texte avec des guillemets, utilise les entités XML :
 
 ## Design — Config charte graphique
 
-**La charte graphique est définie dans un fichier séparé** (`sia_config.md`).
+**La charte graphique est définie dans un fichier séparé** (`sia_theme.md`).
 Elle contient : palette de couleurs, police, layouts disponibles, principes de design.
 
 Tu DOIS respecter scrupuleusement cette config. En résumé :
