@@ -199,38 +199,93 @@ Quand tu ajoutes du texte avec des guillemets, utilise les entités XML :
 
 ---
 
-## Design
+## Design — Charte Sia Partners 2024
+
+### Palette de couleurs "Sia 2024 01"
+
+**TOUJOURS utiliser les couleurs par référence thème** (`<a:schemeClr val="accent1"/>`) et non des hex en dur.
+Le thème est embarqué dans le template — les couleurs sont automatiquement correctes.
+
+| Référence thème | Hex | Nom Sia | Usage |
+|----------------|-----|---------|-------|
+| `dk1` | `#0A151E` | Cool Black | Texte principal, titres |
+| `lt1` | `#FFFFFF` | White | Fond principal, texte sur fond sombre |
+| `dk2` | `#173044` | Navy | Fonds de slides sombres, headers |
+| `lt2` | `#F4F6FC` | Light Gray | Fond secondaire clair |
+| `accent1` | `#00DECC` | Sia Teal | **Accent uniquement** (highlights, icônes, lignes) |
+| `accent2` | `#077C84` | Teal Dark | Accent secondaire, gradients |
+| `accent3` | `#9FF3F0` | Teal Light | Fond d'accent clair |
+| `accent4` | `#455669` | Blue Gray | Texte secondaire, sous-titres |
+| `accent5` | `#00A2A3` | Teal Medium | Liens, éléments interactifs |
+| `accent6` | `#8796A9` | Gray | Éléments tertiaires, bordures |
+
+**Règles d'utilisation des couleurs :**
+- Fonds principaux : White (`lt1`) ou Sia Gradient (navy → teal, défini dans les layouts)
+- Texte : Cool Black (`dk1`) sur fonds clairs, White (`lt1`) sur fonds sombres
+- Cool Black est le SEUL noir autorisé (pas de `#000000`)
+- Sia Teal (`accent1`) est **réservé aux accents** — jamais pour du texte long ou des fonds pleins
+- Les couleurs secondaires (`accent4`, `accent6`) ne s'utilisent jamais seules, toujours avec les primaires
+- Les charts utilisent automatiquement les couleurs dans l'ordre accent1 → accent6
+
+**En XML :**
+```xml
+<!-- ✅ CORRECT — référence thème -->
+<a:solidFill><a:schemeClr val="accent1"/></a:solidFill>
+
+<!-- ❌ FAUX — hex en dur (ne suit pas le thème) -->
+<a:solidFill><a:srgbClr val="00DECC"/></a:solidFill>
+```
+
+### Police
+
+La police officielle est **Sora-SIA** (custom, embarquée dans le template).
+Elle est configurée comme police major ET minor dans le thème.
+
+**Ne change JAMAIS la police.** Utilise les références thème :
+```xml
+<!-- ✅ CORRECT — héritera de Sora-SIA via le thème -->
+<a:rPr lang="fr-FR" sz="2400"/>
+
+<!-- ❌ FAUX — police en dur -->
+<a:rPr lang="fr-FR" sz="2400"><a:latin typeface="Arial"/></a:rPr>
+```
+
+Si tu dois spécifier explicitement : `<a:latin typeface="Sora-SIA"/>`.
+
+### Layouts disponibles dans le template Sia
+
+Le template contient ~80 slides couvrant ces catégories de layouts :
+
+| Catégorie | Usage | Slides types |
+|-----------|-------|-------------|
+| Cover (Navy/Gradient) | Pages de garde avec/sans contacts | 3 variantes Navy, 3 Gradient |
+| Agenda | Sommaire animé | 2 variantes |
+| Divider | Séparateur de section (niveau 1 et 2) | 7 variantes (vidéo, navy, gray) |
+| Texte 1/2/3 colonnes | Contenu structuré | 6 variantes +/- subhead |
+| Bio / Équipe | Profils de consultants | 4 variantes (3, 5, 9, 12 personnes) |
+| CV | Parcours détaillé | 5 variantes |
+| Quote | Citation avec photo | 1 variante |
+| Données / Tableaux | Chiffres, KPIs, budgets | ~15 variantes |
+| Case study | Étude de cas | 1 variante |
+| Factoid / Stats | Chiffres-clés avec visuels | ~10 variantes |
+| Process / Steps | Processus, timeline, étapes | ~10 variantes |
+| Vidéo | Slide vidéo seule ou avec texte | 3 variantes |
+| Statement | Citation ou message fort | 3 variantes |
+| Next steps | Prochaines étapes avec dates | 1 variante |
+| Discussion / Questions | Slide de fin interactive | 3 variantes |
+| Merci / Thank you | Closing (FR/EN, clair/sombre) | 4 variantes |
+
+**Quand tu dupliques une slide, choisis le layout le plus adapté au contenu.**
+Ne répète pas le même layout sur toutes les slides — varie !
 
 ### Principes généraux
 
-- Palette cohérente : 1 couleur dominante (60-70%), 1-2 secondaires, 1 accent
-- Chaque slide : au moins un élément visuel (image, icône, shape, chart)
-- Varier les layouts (colonnes, grilles, callouts, timelines)
-- Titres 36-44pt bold (sz="3600" à sz="4400"), corps 14-16pt (sz="1400" à sz="1600")
+- Titres : sz="2800" à sz="3600" bold
+- Corps : sz="1400" à sz="1800"
 - Marges 0.5" minimum
-- Ne PAS répéter le même layout partout
 - Ne PAS centrer le corps de texte (sauf titres)
-- Ne PAS mettre de lignes décoratives sous les titres
-
-### Palettes de couleurs suggérées
-
-| Thème | Primaire | Secondaire | Accent |
-|-------|----------|------------|--------|
-| Midnight Executive | `1E2761` | `CADCFC` | `FFFFFF` |
-| Forest & Moss | `2C5F2D` | `97BC62` | `F5F5F5` |
-| Ocean Gradient | `065A82` | `1C7293` | `21295C` |
-| Charcoal Minimal | `36454F` | `F2F2F2` | `212121` |
-| Teal Trust | `028090` | `00A896` | `02C39A` |
-| Warm Terracotta | `B85042` | `E7E8D1` | `A7BEAE` |
-
-### Polices recommandées
-
-| Titres | Corps |
-|--------|-------|
-| Georgia | Calibri |
-| Arial Black | Arial |
-| Calibri | Calibri Light |
-| Trebuchet MS | Calibri |
+- Ne PAS ajouter de lignes décoratives sous les titres
+- Chaque slide doit avoir un titre clair
 
 ### Règle d'or pour l'édition de templates
 
@@ -239,4 +294,4 @@ Quand tu modifies un fichier existant, **préserve scrupuleusement tout le forma
 - Garde les `<a:rPr>` (police, taille, gras, italique) identiques
 - Respecte les conventions de bullets du document (buAutoNum, buChar, buFont)
 - Ne change pas les positions/tailles des shapes sauf si demandé
-- Les couleurs par référence thème (`<a:schemeClr>`) sont préférables aux hex directs
+- **TOUJOURS** utiliser `<a:schemeClr>` pour les couleurs, JAMAIS `<a:srgbClr>` sauf si l'original l'utilise
