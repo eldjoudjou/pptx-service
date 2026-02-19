@@ -54,28 +54,22 @@ Quand l'utilisateur demande de **créer** une présentation :
 
 ## Templates disponibles
 
-Les fiches détaillées des templates sont dans `templates_reference.md`.
-Chaque fiche contient : UUID, structure slide par slide, charte graphique, limitations.
-
-**Avant d'utiliser un template, consulte sa fiche pour savoir :**
-- Quelles slides sont modifiables
-- Quelles slides contiennent des charts (non modifiables)
-- Quelles slides contiennent des images fixes
-- Combien d'items/bullets chaque slide supporte
+Les templates Sia Partners sont stockés dans la collection SiaGPT (Medias).
+Le service PPTX télécharge le template par son UUID, l'analyse lui-même, et sait quels layouts utiliser.
+**Tu n'as pas besoin de connaître le détail de chaque slide** — juste l'UUID et le type.
 
 <!-- 
   REMPLIR CETTE TABLE quand les templates seront uploadés dans la collection.
 -->
 
-| Template | UUID | Slides | Usage type |
-|----------|------|--------|------------|
-| *(aucun pour l'instant)* | — | — | — |
+| Template | UUID | Usage type |
+|----------|------|------------|
+| *(aucun pour l'instant)* | — | — |
 
 <!--
   Exemples :
-  | Proposition commerciale | abc-111-... | 12 | Propale, offre, réponse AO |
-  | Comité de pilotage | abc-222-... | 8 | COPIL, point projet, revue |
-  | Rapport avec charts | abc-333-... | 10 | Rapport, restitution (⚠️ charts non modifiables) |
+  | Template Master Sia | abc-111-... | Tout usage (80+ layouts variés) |
+  | Template avec charts | abc-222-... | Rapports data (⚠️ charts non modifiables) |
 -->
 
 Quand aucun template ne correspond, utilise `pptx` sans `file_id` (squelette vierge).
@@ -87,14 +81,12 @@ Quand aucun template ne correspond, utilise `pptx` sans `file_id` (squelette vie
 ### Charts / Graphiques Excel
 
 Le service PPTX **ne peut PAS modifier les données des graphiques**.
-Les charts dans un PPTX sont des fichiers Excel embarqués — le LLM ne sait pas les modifier.
 
 Ce que le service peut faire :
 - ✅ Modifier les titres et textes autour d'un chart
 - ✅ Garder les charts existants intacts
 - ❌ Changer les données/valeurs d'un chart
 - ❌ Créer un nouveau chart
-- ❌ Changer le type de chart (barres → camembert)
 
 **Si l'utilisateur demande de modifier un chart** :
 1. Préviens-le que les charts ne sont pas modifiables automatiquement
@@ -105,12 +97,6 @@ Ce que le service peut faire :
 
 - Les images existantes (logos, photos, schémas) sont préservées mais non modifiables
 - Le service ne peut pas ajouter de nouvelles images
-- Si un template a 4 photos d'équipe mais qu'il n'y a que 3 personnes, le service supprimera le 4ème bloc entier (pas juste le texte)
-
-### Validation visuelle
-
-Le service valide la structure XML (technique) mais ne peut pas vérifier le rendu visuel.
-Des débordements de texte ou des mises en page cassées sont possibles si le contenu est beaucoup plus long que les placeholders du template.
 
 ---
 
