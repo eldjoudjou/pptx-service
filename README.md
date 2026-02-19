@@ -333,7 +333,8 @@ pptx-service/
 ├── pptx_tools.py          ← Manipulation PPTX : unpack, pack, clean, duplicate
 ├── pptx_validate.py       ← Validation : structurelle + XSD
 ├── schemas/               ← Schemas XSD Office Open XML (dans Docker)
-├── system_prompt.md       ← Instructions pour le LLM Ouvrier (modif XML + config Sia)
+├── system_prompt.md       ← Instructions pour le LLM Ouvrier (modif XML, règles génériques)
+├── sia_config.md          ← Config style Sia Partners 2024 (couleurs, police, layouts) — interchangeable
 ├── system_prompt_chef.md  ← Instructions pour le LLM Chef (SiaGPT, choix des tools)
 ├── skill/                 ← Documentation de référence (PAS dans Docker)
 ├── Dockerfile
@@ -363,14 +364,26 @@ Validation complète en deux niveaux. Détaillé ci-dessus.
 
 Schemas XSD officiels de la norme Office Open XML (ISO/IEC 29500), copiés dans Docker pour la validation en runtime. Contient `pml.xsd` (PresentationML), `dml-main.xsd` (DrawingML), `opc-*.xsd` (packaging).
 
-### system_prompt.md (~300 lignes)
+### system_prompt.md (~210 lignes)
 
 Le "cahier des charges" du LLM Ouvrier. Contient :
 - Les 2 phases (planification JSON + modification XML)
 - Le format XML PowerPoint et les bonnes pratiques
-- **La config Sia Partners** : palette de couleurs "Sia 2024 01", police Sora-SIA, règles d'utilisation des couleurs par référence thème, catalogue des layouts disponibles
+- Les règles génériques (layouts variés, bullets, whitespace, smart quotes)
+- Une référence vers `sia_config.md` pour la charte graphique
 
-La config style est séparée du template .pptx lui-même — le template est l'architecture (layouts, positions, shapes), le system prompt contient les règles de style (couleurs, polices, conventions). C'est le levier principal pour améliorer la qualité des modifications XML.
+Ce fichier est **générique** — il ne contient pas de config spécifique à un client.
+
+### sia_config.md (~100 lignes)
+
+La charte graphique, **séparée et interchangeable**. Contient :
+- Palette "Sia 2024 01" (10 couleurs avec noms, hex, refs thème, règles d'usage)
+- Référence MS Office Palette (theme colors customisés, charts auto-populate)
+- Police Sora-SIA
+- Catalogue des ~80 layouts par catégorie
+- Principes de design (tailles, marges)
+
+Pour changer de client ou de charte : remplacer ce fichier. Configurable via `STYLE_CONFIG_PATH`.
 
 ### system_prompt_chef.md (~100 lignes)
 
@@ -458,6 +471,8 @@ curl http://localhost:8000/health
 | `LLM_API_URL` | Non | `https://backend.siagpt.ai/chat/plain_llm` | URL de l'API LLM |
 | `LLM_MODEL` | Non | `claude-4.5-sonnet` | Modèle LLM |
 | `SIAGPT_MEDIAS_URL` | Non | `https://backend.siagpt.ai/medias` | URL API Medias |
+| `SYSTEM_PROMPT_PATH` | Non | `/app/system_prompt.md` | Chemin du system prompt (règles génériques) |
+| `STYLE_CONFIG_PATH` | Non | `/app/sia_config.md` | Chemin de la config style (couleurs, polices, layouts) — interchangeable |
 | `MAX_RETRIES` | Non | `4` | Tentatives si XML invalide |
 
 ---
